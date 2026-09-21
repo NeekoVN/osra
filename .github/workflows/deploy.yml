@@ -34,7 +34,7 @@ jobs:
         run: npx tsc --noEmit
 
       - name: Build with GitHub Pages base
-        run: npx vite build --base=/${{ github.event.repository.name }}/
+        run: npx vite build --base=/
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
