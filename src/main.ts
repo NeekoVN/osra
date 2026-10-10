@@ -199,6 +199,8 @@ function updatePlayfieldDimensions(): void {
 function resetToIngestion(): void {
   // Abort any in-flight gradual-PP fill from a previous evaluation.
   evalRunCounter++;
+  isEvaluating = false;
+  wavesViewport?.classList.remove('is-covering', 'is-revealing');
   timeBus.pause();
   timeBus.seek(0);
 
@@ -684,53 +686,56 @@ async function triggerEvaluation(): Promise<void> {
   if (isEvaluating) return;
   isEvaluating = true;
 
-  const isFromIngestion = document.body.classList.contains('ingestion-active');
+  try {
+    const isFromIngestion = document.body.classList.contains('ingestion-active');
 
-  if (isFromIngestion && wavesViewport) {
-    // 1. Phase 1: COVER
-    // Waves rise up from bottom and blanket the screen
-    wavesViewport.classList.remove('is-revealing');
-    wavesViewport.classList.add('is-covering');
+    if (isFromIngestion && wavesViewport) {
+      // 1. Phase 1: COVER
+      // Waves rise up from bottom and blanket the screen
+      wavesViewport.classList.remove('is-revealing');
+      wavesViewport.classList.add('is-covering');
 
-    // Wait for the final wave (w4: delay 210ms + duration 800ms) to settle and cover the screen
-    await new Promise<void>((resolve) => setTimeout(resolve, 1050));
+      // Wait for the final wave (w4: delay 210ms + duration 800ms) to settle and cover the screen
+      await new Promise<void>((resolve) => setTimeout(resolve, 1050));
 
-    // 2. WHILE 100% COVERED:
-    // Switch views behind the solid wave cover
-    document.body.classList.remove('ingestion-active');
-    analyzerWorkspace.style.display = 'grid';
-    headerMetadata.style.display = 'flex';
-    if (beatmapDiffGrid) beatmapDiffGrid.style.display = 'grid';
+      // 2. WHILE 100% COVERED:
+      // Switch views behind the solid wave cover
+      document.body.classList.remove('ingestion-active');
+      analyzerWorkspace.style.display = 'grid';
+      headerMetadata.style.display = 'flex';
+      if (beatmapDiffGrid) beatmapDiffGrid.style.display = 'grid';
 
-    // Await complete evaluation so EVERYTHING is done loading:
-    await performEvaluation();
+      // Await complete evaluation so EVERYTHING is done loading:
+      await performEvaluation();
 
-    // Double requestAnimationFrame to ensure browser & GPU paint is complete
-    await new Promise<void>((resolve) => {
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => resolve());
+      // Double requestAnimationFrame to ensure browser & GPU paint is complete
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => resolve());
+        });
       });
-    });
 
-    // 3. Phase 2: REVEAL
-    // Waves continue rising off the top, revealing the analyzer from bottom up!
-    wavesViewport.classList.remove('is-covering');
-    wavesViewport.classList.add('is-revealing');
+      // 3. Phase 2: REVEAL
+      // Waves continue rising off the top, revealing the analyzer from bottom up!
+      wavesViewport.classList.remove('is-covering');
+      wavesViewport.classList.add('is-revealing');
 
-    // Wait for waves to clear off the top
-    await new Promise<void>((resolve) => setTimeout(resolve, 1050));
+      // Wait for waves to clear off the top
+      await new Promise<void>((resolve) => setTimeout(resolve, 1050));
 
-    // Reset wave viewport state
-    wavesViewport.classList.remove('is-revealing');
-  } else {
-    document.body.classList.remove('ingestion-active');
-    analyzerWorkspace.style.display = 'grid';
-    headerMetadata.style.display = 'flex';
-    if (beatmapDiffGrid) beatmapDiffGrid.style.display = 'grid';
-    await performEvaluation();
+      // Reset wave viewport state
+      wavesViewport.classList.remove('is-revealing');
+    } else {
+      document.body.classList.remove('ingestion-active');
+      analyzerWorkspace.style.display = 'grid';
+      headerMetadata.style.display = 'flex';
+      if (beatmapDiffGrid) beatmapDiffGrid.style.display = 'grid';
+      await performEvaluation();
+    }
+  } finally {
+    isEvaluating = false;
+    wavesViewport?.classList.remove('is-covering', 'is-revealing');
   }
-
-  isEvaluating = false;
 }
 
 async function performEvaluation(): Promise<void> {
@@ -768,6 +773,7 @@ async function performEvaluation(): Promise<void> {
   // Compute exact osu!lazer difficulty and performance points via rosu-pp WASM
   try {
     const lazerDiff = await calculateLazerDifficulty(currentBeatmap, currentReplay.mods, currentReplayRate);
+    if (runToken !== evalRunCounter) return;
     currentLazerDiff = lazerDiff;
     currentDiffAttributes = {
       starRating: lazerDiff.starRating,
@@ -821,6 +827,10 @@ async function performEvaluation(): Promise<void> {
 
     const isStable = !currentReplay.soloScoreInfo;
     const stepper = await createLazerGradualPerformance(currentBeatmap, currentReplay.mods, currentReplayRate, !isStable);
+    if (runToken !== evalRunCounter) {
+      stepper.free();
+      return;
+    }
     precomputedLivePP = [];
     const totalEvents = prefixStats.length;
     let lastPP: LazerPerformanceBreakdown | null = null;
@@ -896,6 +906,8 @@ async function performEvaluation(): Promise<void> {
       mods: currentReplay.mods
     }, currentDiffAttributes);
   }
+
+  if (runToken !== evalRunCounter) return;
 
   // Set initial replay rate based on the replay's actual clock
   const gameplayRate = currentReplayRate;
