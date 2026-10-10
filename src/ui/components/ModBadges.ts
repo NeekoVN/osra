@@ -1,4 +1,8 @@
 import { OsuMods, OsrReplay } from '../../core/types/replay.ts';
+import FRAME_URL from '../../assets/icons/BeatmapDetails/mod-icon.png';
+import EXTENDER_URL from '../../assets/icons/BeatmapDetails/mod-icon-extender.png';
+
+const MOD_ICONS = import.meta.glob<string>('../../assets/icons/Mods/*.png', { eager: true, import: 'default' });
 
 /**
  * Lazer-style mod badges.
@@ -39,9 +43,6 @@ interface ModDef {
   label: string;
 }
 
-const FRAME_URL = '/src/assets/icons/BeatmapDetails/mod-icon.png';
-const EXTENDER_URL = '/src/assets/icons/BeatmapDetails/mod-icon-extender.png';
-const ICON_BASE = '/src/assets/icons/Mods/';
 
 const MOD_DEFS: Record<string, ModDef> = {
   EZ: { acronym: 'EZ', icon: 'mod-easy.png', type: 'DifficultyReduction', label: 'Easy' },
@@ -258,7 +259,8 @@ function buildModElement(
   if (def.icon) {
     const glyph = document.createElement('span');
     glyph.className = 'mod-glyph';
-    glyph.style.setProperty('--glyph-mask', `url("${ICON_BASE}${def.icon}")`);
+    const iconUrl = MOD_ICONS[`../../assets/icons/Mods/${def.icon}`] || '';
+    glyph.style.setProperty('--glyph-mask', `url("${iconUrl}")`);
     glyph.setAttribute('aria-hidden', 'true');
     main.appendChild(glyph);
   } else {

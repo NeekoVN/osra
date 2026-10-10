@@ -27,6 +27,9 @@ import { HitScatterRenderer } from './ui/canvas/HitScatterRenderer.ts';
 import { TelemetryCharts } from './ui/charts/TelemetryCharts.ts';
 import { IncidentsDrawer } from './ui/components/IncidentsDrawer.ts';
 import { PlaybackControls } from './ui/components/PlaybackControls.ts';
+import sampleClickUrl from './assets/sounds/osu-logo-select.wav';
+
+const BADGE_ICONS = import.meta.glob<string>('./assets/icons/Badges/*.svg', { eager: true, import: 'default' });
 
 let currentReplay: OsrReplay | null = null;
 let currentBeatmap: Beatmap | null = null;
@@ -410,7 +413,7 @@ initializeComponents();
 // ========================================================
 // INGESTION LOGIC & WAVE TRANSITION
 // ========================================================
-const sampleClick = new Audio('/src/assets/sounds/osu-logo-select.wav');
+const sampleClick = new Audio(sampleClickUrl);
 sampleClick.volume = 0.4;
 
 function playLogoClick(): void {
@@ -971,7 +974,7 @@ function handleAccuracyConditions(stat: PrefixHitStat): void {
     badgeName = isSilver ? 'GradeSmall-S-Silver.svg' : 'GradeSmall-S.svg';
   }
 
-  const assetPath = `/src/assets/icons/Badges/${badgeName}`;
+  const assetPath = BADGE_ICONS[`./assets/icons/Badges/${badgeName}`] || '';
 
   // Only update innerHTML if the badge has actually changed to prevent DOM thrashing
   if (metaRank.dataset.currentRank !== badgeName) {
