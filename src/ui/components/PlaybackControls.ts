@@ -1,5 +1,8 @@
 import { TimeBus } from '../TimeBus.ts';
 import { TimedHitEvent, HitJudgement, DesyncType } from '../../core/types/telemetry.ts';
+import notchTickUrl from '../../assets/sounds/notch-tick.wav';
+import osdChangeUrl from '../../assets/sounds/osd-change.wav';
+import submitSelectUrl from '../../assets/sounds/submit-select.wav';
 
 const ICONS = {
   play: `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 20 12 6 21 6 3"></polygon></svg>`,
@@ -25,9 +28,9 @@ export class PlaybackControls {
   private currentSkipGaps: Array<{ from: number; to: number }> = [];
   private lastIsPlaying: boolean | null = null;
 
-  private sampleNotch = new Audio('/src/assets/sounds/notch-tick.wav');
-  private sampleOsd = new Audio('/src/assets/sounds/osd-change.wav');
-  private sampleSubmit = new Audio('/src/assets/sounds/submit-select.wav');
+  private sampleNotch = new Audio(notchTickUrl);
+  private sampleOsd = new Audio(osdChangeUrl);
+  private sampleSubmit = new Audio(submitSelectUrl);
   private lastNotchTime: number = 0;
 
   constructor(container: HTMLElement, timeBus: TimeBus) {
