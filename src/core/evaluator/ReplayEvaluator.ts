@@ -263,16 +263,33 @@ export function evaluateReplaySession(replay: OsrReplay, rawBeatmap: Beatmap): E
   const orderedIndices = objects
     .map((_, i) => i)
     .sort((a, b) => objects[a].time - objects[b].time);
+  const orderPos = new Array<number>(objects.length);
+  orderedIndices.forEach((idx, k) => { orderPos[idx] = k; });
+
+  // settledIdx: every entry in orderedIndices[0..settledIdx) is resolved
+  // (judged or spinner). Taps arrive in non-decreasing time order and the
+  // order is time-sorted, so all four scans below only need to touch
+  // [settledIdx, ...) — amortized O(taps + objects) instead of O(taps × objects).
+  let settledIdx = 0;
 
   for (let j = 0; j < taps.length; j++) {
     const t = taps[j];
     if (t.used) continue;
 
     // Auto-miss sweep: anything whose full hit window has elapsed is dead.
-    for (const idx of orderedIndices) {
-      if (matchStates[idx].judged || objects[idx].objectType === 'spinner') continue;
+    // Each entry settles once: later taps only see a later-or-equal time, so
+    // an entry that survives this tap can only expire on a later one.
+    while (settledIdx < orderedIndices.length) {
+      const idx = orderedIndices[settledIdx];
+      if (objects[idx].objectType === 'spinner' || matchStates[idx].judged) {
+        settledIdx++;
+        continue;
+      }
       if (objects[idx].time + windows.meh < t.time) {
         matchStates[idx].judged = true;
+        settledIdx++;
+      } else {
+        break;
       }
     }
 
@@ -280,14 +297,15 @@ export function evaluateReplaySession(replay: OsrReplay, rawBeatmap: Beatmap): E
     // The press is delivered to the receptor that is drawn on top; osu!lazer
     // pools draw earlier-start (current) hit objects in front of later ones,
     // so the topmost = the earliest candidate containing the cursor.
+    // Entries before settledIdx are resolved (skipped by the old full scan
+    // too); entries past the first window starting after t can never contain t.
     let topmost = -1;
-    for (const idx of orderedIndices) {
+    for (let k = settledIdx; k < orderedIndices.length; k++) {
+      const idx = orderedIndices[k];
       const obj = objects[idx];
+      if (obj.time - windows.meh > t.time) break;
       if (matchStates[idx].judged || obj.objectType === 'spinner') continue;
-      const windowStart = obj.time - windows.meh;
-      const windowEnd = obj.time + windows.meh;
-      if (t.time < windowStart) continue;
-      if (t.time > windowEnd) continue;
+      if (t.time > obj.time + windows.meh) continue;
       const info = checkTapHit(t, obj.stackedX, obj.stackedY);
       if (info.minDist > circleRadius) continue;
       topmost = idx;
@@ -297,13 +315,17 @@ export function evaluateReplaySession(replay: OsrReplay, rawBeatmap: Beatmap): E
     if (topmost < 0) continue; // press consumed by nothing hittable
 
     const obj = objects[topmost];
+    const objPos = orderPos[topmost];
 
     // StartTimeOrderedHitPolicy: the last earlier unjudged blocking object.
+    // Everything before settledIdx is resolved, so scanning from there finds
+    // the same blocker as the old scan from zero. The strict time bound keeps
+    // simultaneous objects (equal timestamps) out, exactly like the old break.
     let blockingIdx = -1;
-    for (const idx of orderedIndices) {
+    for (let k = settledIdx; k < orderedIndices.length; k++) {
+      const idx = orderedIndices[k];
       if (objects[idx].time >= obj.time) break;
-      if (matchStates[idx].judged || objects[idx].objectType === 'spinner') continue;
-      blockingIdx = idx;
+      if (!matchStates[idx].judged && objects[idx].objectType !== 'spinner') blockingIdx = idx;
     }
 
     // If the press is before that blocking object's start time, it is blocked
@@ -320,17 +342,37 @@ export function evaluateReplaySession(replay: OsrReplay, rawBeatmap: Beatmap): E
     matchStates[topmost].bestTapInfo = checkTapHit(t, obj.stackedX, obj.stackedY);
     t.used = true;
 
-    // HandleHit: force-miss all earlier unjudged blocking objects.
-    for (const idx of orderedIndices) {
+    // HandleHit: force-miss all earlier unjudged blocking objects, then seal
+    // the resolved prefix. The strict time bound preserves simultaneous
+    // objects (equal timestamps) as matchable, exactly like the old break.
+    let sealTo = settledIdx;
+    for (; sealTo < objPos; sealTo++) {
+      const idx = orderedIndices[sealTo];
       if (objects[idx].time >= obj.time) break;
-      if (matchStates[idx].judged || objects[idx].objectType === 'spinner') continue;
-      matchStates[idx].judged = true;
+      if (objects[idx].objectType !== 'spinner') matchStates[idx].judged = true;
     }
+    settledIdx = sealTo;
   }
 
   // Watermark: the tap time of the most recently judged note. Any tap before this
   // time is causally in the past and cannot be blamed on a later miss.
   let lastJudgedTapTime = -Infinity;
+
+  // Upper causality bound per note: the earliest tap time at which any LATER
+  // note was judged. A miss display tap must never come from after that point —
+  // otherwise a press that belongs to a future note is shown travelling back
+  // in time onto an earlier miss (e.g. a late tap judged on note N+1 rendered
+  // as note N's miss vector). Suffix minimum over matched taps; unmatched or
+  // spinner notes contribute no bound.
+  const nextJudgedTapTime: number[] = new Array(objects.length).fill(Infinity);
+  {
+    let runningMin = Infinity;
+    for (let k = objects.length - 1; k >= 0; k--) {
+      nextJudgedTapTime[k] = runningMin;
+      const bt = matchStates[k]?.bestTap;
+      if (bt && matchStates[k].judged) runningMin = Math.min(runningMin, bt.time);
+    }
+  }
 
   for (let i = 0; i < objects.length; i++) {
     const obj = objects[i];
@@ -405,12 +447,17 @@ export function evaluateReplaySession(replay: OsrReplay, rawBeatmap: Beatmap): E
       // a "speed miss" / overshoot. Prioritise these over the preempt-window
       // closest-distance search to avoid double-blaming the same tap across
       // consecutive misses (e.g. streams where every tap barely misses).
+      //
+      // Causality: never claim a tap from after a later note's judgement tap
+      // (upper bound). Such a press belongs to the future note's timeframe —
+      // showing it on this miss would render time travelling backwards.
       let foundInWindowTap = false;
       let closestInWindowDist = Infinity;
+      const step1Upper = Math.min(windowEnd, nextJudgedTapTime[i]);
       for (let ti = 0; ti < taps.length; ti++) {
         const t = taps[ti];
         if (t.time < windowStart) continue;
-        if (t.time > windowEnd) break;
+        if (t.time > step1Upper) break;
         // Skip taps already matched to another note or display-claimed
         if (t.used && !t.blocked) continue;
         if (t.displayUsed) continue;
@@ -442,8 +489,11 @@ export function evaluateReplaySession(replay: OsrReplay, rawBeatmap: Beatmap): E
         const MAX_BLAME_RADII = 4.0;
         const maxBlameDist = circleRadius * MAX_BLAME_RADII;
         const TIME_WEIGHT_PX_PER_MS = 0.5;
-        // Never reach back before the previous judgment
+        // Never reach back before the previous judgment, and never reach
+        // forward past a later note's judgement tap (same causality bound as
+        // Step 1 — a future note's press cannot explain this miss).
         const earliestLookback = Math.max(targetTime - preemptMs, lastJudgedTapTime);
+        const latestLookahead = Math.min(windowEnd, nextJudgedTapTime[i]);
 
         let bestScore = Infinity;
         let foundAnyTap = false;
@@ -451,7 +501,7 @@ export function evaluateReplaySession(replay: OsrReplay, rawBeatmap: Beatmap): E
         for (let ti = 0; ti < taps.length; ti++) {
           const t = taps[ti];
           if (t.time < earliestLookback) continue;
-          if (t.time > windowEnd) break;
+          if (t.time > latestLookahead) break;
           if (t.used && !t.blocked) continue;
           if (t.displayUsed) continue;
 
@@ -503,13 +553,17 @@ export function evaluateReplaySession(replay: OsrReplay, rawBeatmap: Beatmap): E
     const timeOffset = (hasTap || hasLateTapOutsideWindow || hasSpeedMiss) ? tapTime - targetTime : windows.miss;
     const rateAdjustedOffset = timeOffset / gameplayRate;
 
-    // Classic mod & legacy stable scores do not have sliderhead accuracy (OsuModClassic.NoSliderHeadAccuracy = true)
-    const isClassic = !replay.soloScoreInfo || replay.soloScoreInfo.mods?.some(m => m.acronym === 'CL');
+    // osu!stable judges slider heads by timing (300/100/50). Only the
+    // lazer Classic mod collapses head timing into pass/fail
+    // (OsuModClassic.NoSliderHeadAccuracy), so stable scores must go through
+    // the normal timing judgement or their 300/100/50 counts inflate.
+    const isLazerClassic =
+      !!replay.soloScoreInfo && (replay.soloScoreInfo.mods?.some(m => m.acronym === 'CL') ?? false);
 
     // Evaluate judgement
     let judgement = HitJudgement.Miss;
     if (hasTap && tapDistance <= circleRadius && Math.abs(timeOffset) <= windows.meh) {
-      if (isSliderHead && isClassic) {
+      if (isSliderHead && isLazerClassic) {
         judgement = HitJudgement.Great;
       } else {
         judgement = judgeHitOffset(timeOffset, windows);

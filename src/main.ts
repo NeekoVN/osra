@@ -4,10 +4,10 @@ import { parseOszPackage, OszPackage, OszDifficultyEntry } from './core/binary/O
 import { MirrorClient } from './core/api/MirrorClient.ts';
 import { calculateEffectiveDifficulty, getGameplayRateFromMods } from './core/math/HitWindows.ts';
 import { calculateLazerAccuracy } from './core/math/RollingAccuracy.ts';
-import { OsrReplay, OsuMods } from './core/types/replay.ts';
+import { OsrReplay } from './core/types/replay.ts';
 import { Beatmap } from './core/types/beatmap.ts';
 import { evaluateReplaySession, getModdedBeatmap, EvaluationResult } from './core/evaluator/ReplayEvaluator.ts';
-import { TimedHitEvent, HitJudgement } from './core/types/telemetry.ts';
+import { TimedHitEvent } from './core/types/telemetry.ts';
 import { PerformancePoints, PerformanceBreakdown, DifficultyAttributes } from './core/math/PerformancePoints.ts';
 import {
   calculateLazerDifficulty,
@@ -15,6 +15,10 @@ import {
   LazerDifficultyAttributes,
   LazerPerformanceBreakdown
 } from './core/math/LazerDifficulty.ts';
+import { getDiffColor, getDiffTextColor } from './core/math/ColorHelper.ts';
+import { buildPrefixCombo } from './core/math/ComboTracker.ts';
+import { renderModBadges } from './ui/components/ModBadges.ts';
+import { Odometer, ODO_ACC, ODO_COMBO, ODO_INT, ODO_PP, ODO_UR, type OdometerOptions } from './ui/components/Odometer.ts';
 
 // UI Components
 import { TimeBus } from './ui/TimeBus.ts';
@@ -44,26 +48,30 @@ let telemetryCharts: TelemetryCharts | null = null;
 let incidentsDrawer: IncidentsDrawer | null = null;
 let playbackControls: PlaybackControls | null = null;
 
-// DOM Elements
-const replayDropzone = document.getElementById('replay-dropzone') as HTMLDivElement;
+// Ingestion & Transition DOM Elements
+const ingestionStage = document.getElementById('ingestion-stage') as HTMLElement;
+const logoHoverContainer = document.getElementById('logo-hover-container') as HTMLElement;
+const logoBounceContainer = document.getElementById('logo-bounce-container') as HTMLElement;
+const flashLayer = document.getElementById('flash-layer') as HTMLElement;
+const ringProgress = document.getElementById('ring-progress') as SVGCircleElement | null;
 const replayInput = document.getElementById('replay-input') as HTMLInputElement;
-const replayDesc = document.getElementById('replay-desc') as HTMLDivElement;
 
-const beatmapDropzone = document.getElementById('beatmap-dropzone') as HTMLDivElement;
+const dockReplayBar = document.getElementById('dock-replay-bar') as HTMLElement;
+const dockPlayer = document.getElementById('dock-player') as HTMLElement;
+const dockHash = document.getElementById('dock-hash') as HTMLElement;
+const dockMods = document.getElementById('dock-mods') as HTMLElement;
 const beatmapInput = document.getElementById('beatmap-input') as HTMLInputElement;
-const beatmapDesc = document.getElementById('beatmap-desc') as HTMLDivElement;
+const diffLadder = document.getElementById('diff-ladder') as HTMLElement;
+const diffButtons = document.getElementById('diff-buttons') as HTMLElement;
+const dockSubmitBtn = document.getElementById('dock-submit-btn') as HTMLButtonElement;
 
-const mirrorMsg = document.getElementById('mirror-msg') as HTMLSpanElement;
-const pulseIndicator = document.getElementById('pulse-indicator') as HTMLSpanElement;
+const wavesViewport = document.getElementById('waves-viewport') as HTMLElement;
+
 const audioPlayer = document.getElementById('audio-player') as HTMLAudioElement;
 
-const diffSelectorContainer = document.getElementById('diff-selector-container') as HTMLDivElement;
-const diffButtons = document.getElementById('diff-buttons') as HTMLDivElement;
-
-const ingestionSection = document.getElementById('ingestion-section') as HTMLElement;
 const analyzerWorkspace = document.getElementById('analyzer-workspace') as HTMLElement;
 const headerMetadata = document.getElementById('header-metadata') as HTMLElement;
-const statusBadge = document.getElementById('status-badge') as HTMLSpanElement;
+const beatmapDiffGrid = document.getElementById('beatmap-diff-grid') as HTMLElement;
 
 // Canvases & Containers
 const playfieldCanvas = document.getElementById('playfield-canvas') as HTMLCanvasElement;
@@ -86,8 +94,38 @@ interface PrefixHitStat {
   maxTicks: number;
   endsHit: number;
   maxEnds: number;
+  ppStep: boolean;
+  headIdx: number;
 }
 let prefixStats: PrefixHitStat[] = [];
+
+// Odometer-style rolling numbers for the top-bar stats (ACC / combo / UR /
+// PP / judgements). Bound lazily to their elements; targets stream in at
+// TimeBus rate and each digit strip interpolates via CSS transition with a
+// motion-blur class while rolling.
+const odometers = new Map<string, { odo: Odometer; el: HTMLElement }>();
+// Minimum integer slots per odometer: invisible ghost digits keep every
+// value right-aligned in a fixed-width box so digits never shift as numbers
+// grow. ACC caps at 100 and UR stays below 100 in practice; the rest derive
+// from the loaded map in reserveHstatsWidths().
+const odoMinInt = new Map<string, number>([['acc', 3], ['ur', 2]]);
+function odoSet(key: string, el: HTMLElement | null, value: number, opts: OdometerOptions, snap: boolean): void {
+  if (!el) return;
+  let entry = odometers.get(key);
+  if (!entry || entry.el !== el) {
+    entry = { odo: new Odometer(el, opts), el };
+    odometers.set(key, entry);
+  }
+  const minInt = odoMinInt.get(key);
+  if (minInt !== undefined) entry.odo.setMinIntDigits(minInt);
+  entry.odo.set(value, snap);
+}
+function resetOdometers(): void {
+  odometers.clear();
+}
+// Last live-stat frame, used to detect seek jumps (snap instead of rolling).
+let lastLiveTime = 0;
+let lastLiveIdx = -1;
 
 /** Actual gameplay clock rate for the loaded replay (e.g. DT@1.2x), from soloScoreInfo mods or the bitmask */
 let currentReplayRate = 1.0;
@@ -121,7 +159,16 @@ function initializeComponents() {
     scatterRenderer?.render(t);
   });
 
+  // Torus loads async via @font-face, so widths measured before it arrives
+  // use the fallback font — re-reserve once the real digits exist.
+  if (typeof document !== 'undefined' && document.fonts) {
+    void document.fonts.ready.then(() => {
+      if (currentBeatmap) reserveHstatsWidths();
+    });
+  }
+
   setupLayoutControls();
+  setupLogoRig();
 }
 
 function updatePlayfieldDimensions(): void {
@@ -147,7 +194,8 @@ function updatePlayfieldDimensions(): void {
 }
 
 function resetToIngestion(): void {
-  // 1. Pause playback and reset time
+  // Abort any in-flight gradual-PP fill from a previous evaluation.
+  evalRunCounter++;
   timeBus.pause();
   timeBus.seek(0);
 
@@ -176,6 +224,9 @@ function resetToIngestion(): void {
   currentLazerDiff = null;
   precomputedLivePP = [];
   prefixStats = [];
+  resetOdometers();
+  lastLiveTime = 0;
+  lastLiveIdx = -1;
 
   // 5. Reset UI components
   playfieldRenderer?.clear();
@@ -186,28 +237,37 @@ function resetToIngestion(): void {
   playbackControls?.setIncidents([]);
   playbackControls?.setSkipInfo(0, []);
 
-  // 6. Reset dropzones UI state
-  replayDropzone.classList.remove('loaded');
-  replayDesc.textContent = 'Drag & drop your .osr replay here, or click to browse';
-  replayInput.value = '';
-
-  beatmapDropzone.classList.remove('loaded');
-  beatmapDesc.textContent = 'Drag & drop .osz archive or .osu file, or auto-fetch from mirror';
-  beatmapInput.value = '';
-
-  // 7. Reset diff selector and mirror status banner
-  diffSelectorContainer.style.display = 'none';
-  diffButtons.innerHTML = '';
-  setMirrorStatus('Auto-fetch: Enabled (queries public mirrors automatically on .osr drop)', false);
-
-  // 8. Hide workspace & header metadata, reveal dropzone ingestion section
+  // 6. Reset ingestion stage UI
+  document.body.classList.add('ingestion-active');
   analyzerWorkspace.style.display = 'none';
   headerMetadata.style.display = 'none';
-  ingestionSection.style.display = 'block';
+  if (beatmapDiffGrid) beatmapDiffGrid.style.display = 'none';
 
-  // 9. Reset status badge and top header titles
-  statusBadge.className = 'badge';
-  statusBadge.textContent = 'Awaiting Files';
+  if (ingestionStage) {
+    ingestionStage.classList.remove('dock-active', 'fetching');
+  }
+  setProgress(0);
+  if (dockReplayBar) dockReplayBar.style.display = 'none';
+  if (diffLadder) diffLadder.style.display = 'none';
+  if (dockSubmitBtn) dockSubmitBtn.style.display = 'none';
+  if (diffButtons) diffButtons.innerHTML = '';
+  if (replayInput) replayInput.value = '';
+  if (beatmapInput) beatmapInput.value = '';
+
+  // 7. Reset top header titles
+  const rankTileReset = document.getElementById('meta-rank');
+  if (rankTileReset) {
+    rankTileReset.hidden = true;
+    delete rankTileReset.dataset.currentRank;
+    rankTileReset.innerHTML = '';
+  }
+  const srPillReset = document.getElementById('meta-sr-pill');
+  if (srPillReset) srPillReset.hidden = true;
+  const modsReset = document.getElementById('meta-mods-container');
+  if (modsReset) {
+    modsReset.innerHTML = '';
+    modsReset.style.display = 'none';
+  }
   const topTitle = document.getElementById('top-title');
   if (topTitle) topTitle.textContent = 'REPLAY ANALYZER';
   const topSubtitle = document.getElementById('top-subtitle');
@@ -215,27 +275,33 @@ function resetToIngestion(): void {
 }
 
 function setupLayoutControls(): void {
-  const brandHeader = document.getElementById('brand-header') || document.querySelector('.brand');
+  const brandHeader = document.getElementById('brand-header') || document.querySelector('.brand-cell');
   if (brandHeader) {
     brandHeader.addEventListener('click', () => {
-      if (analyzerWorkspace.style.display !== 'none') {
-        resetToIngestion();
-      }
+      resetToIngestion();
     });
   }
-  const btnToggleEvents = document.getElementById('btn-toggle-events') as HTMLButtonElement | null;
-  const incidentsPanel = document.getElementById('incidents-panel') as HTMLElement | null;
-  if (btnToggleEvents && incidentsPanel) {
-    btnToggleEvents.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const isMin = incidentsPanel.classList.toggle('minimized');
-      btnToggleEvents.innerHTML = isMin
-        ? `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>`
-        : `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line></svg>`;
-      btnToggleEvents.title = isMin ? 'Expand Events Panel' : 'Minimize Events Panel';
-      updatePlayfieldDimensions();
+  const importBtn = document.getElementById('btn-import') as HTMLButtonElement | null;
+  if (importBtn) {
+    importBtn.addEventListener('click', () => {
+      resetToIngestion();
     });
   }
+  // Events minimize toggle lives inside the drawer-rendered tabs bar, so it is
+  // bound via delegation (the button is recreated on every tab switch).
+  document.addEventListener('click', (e) => {
+    const btn = (e.target as HTMLElement).closest?.('#btn-toggle-events') as HTMLElement | null;
+    if (!btn) return;
+    e.stopPropagation();
+    const incidentsPanel = document.getElementById('incidents-panel');
+    if (!incidentsPanel) return;
+    const isMin = incidentsPanel.classList.toggle('minimized');
+    btn.innerHTML = isMin
+      ? `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>`
+      : `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line></svg>`;
+    btn.title = isMin ? 'Expand Events Panel' : 'Minimize Events Panel';
+    updatePlayfieldDimensions();
+  });
 
   const btnExpandPlayfield = document.getElementById('btn-expand-playfield') as HTMLButtonElement | null;
   const playfieldPanel = document.getElementById('playfield-panel') as HTMLElement | null;
@@ -249,38 +315,52 @@ function setupLayoutControls(): void {
   }
 
   const btnToggleTrail = document.getElementById('btn-toggle-trail') as HTMLButtonElement | null;
+  const btnTogglePathTrail = document.getElementById('btn-toggle-path-trail') as HTMLButtonElement | null;
+  const btnToggleVectors = document.getElementById('btn-toggle-vectors') as HTMLButtonElement | null;
+
+  const updateChipState = (
+    btn: HTMLButtonElement | null,
+    isEnabled: boolean,
+    activeTitle: string,
+    inactiveTitle: string
+  ) => {
+    if (!btn) return;
+    btn.classList.toggle('is-active', isEnabled);
+    btn.classList.toggle('off', !isEnabled);
+    btn.setAttribute('aria-pressed', String(isEnabled));
+    btn.title = isEnabled ? activeTitle : inactiveTitle;
+  };
+
+  if (playfieldRenderer) {
+    updateChipState(btnToggleTrail, playfieldRenderer.isTrailEnabled(), 'Click to disable Cursor Trail', 'Click to enable Cursor Trail');
+    updateChipState(btnTogglePathTrail, playfieldRenderer.isPathTrailEnabled(), 'Click to disable Long Path Trail', 'Click to enable Long Path Trail');
+    updateChipState(btnToggleVectors, playfieldRenderer.isErrorVectorsEnabled(), 'Click to disable Error Vectors', 'Click to enable Error Vectors');
+  }
+
   if (btnToggleTrail) {
     btnToggleTrail.addEventListener('click', (e) => {
       e.stopPropagation();
       if (!playfieldRenderer) return;
       const isEnabled = playfieldRenderer.toggleTrail();
-      btnToggleTrail.textContent = isEnabled ? 'Trail: On' : 'Trail: Off';
-      btnToggleTrail.classList.toggle('off', !isEnabled);
-      btnToggleTrail.title = isEnabled ? 'Click to disable Cursor Trail' : 'Click to enable Cursor Trail';
+      updateChipState(btnToggleTrail, isEnabled, 'Click to disable Cursor Trail', 'Click to enable Cursor Trail');
     });
   }
 
-  const btnTogglePathTrail = document.getElementById('btn-toggle-path-trail') as HTMLButtonElement | null;
   if (btnTogglePathTrail) {
     btnTogglePathTrail.addEventListener('click', (e) => {
       e.stopPropagation();
       if (!playfieldRenderer) return;
       const isEnabled = playfieldRenderer.togglePathTrail();
-      btnTogglePathTrail.textContent = isEnabled ? 'Path Trail: On' : 'Path Trail: Off';
-      btnTogglePathTrail.classList.toggle('off', !isEnabled);
-      btnTogglePathTrail.title = isEnabled ? 'Click to disable Long Path Trail' : 'Click to enable Long Path Trail';
+      updateChipState(btnTogglePathTrail, isEnabled, 'Click to disable Long Path Trail', 'Click to enable Long Path Trail');
     });
   }
 
-  const btnToggleVectors = document.getElementById('btn-toggle-vectors') as HTMLButtonElement | null;
   if (btnToggleVectors) {
     btnToggleVectors.addEventListener('click', (e) => {
       e.stopPropagation();
       if (!playfieldRenderer) return;
       const isEnabled = playfieldRenderer.toggleErrorVectors();
-      btnToggleVectors.textContent = isEnabled ? 'Error Vectors: On' : 'Error Vectors: Off';
-      btnToggleVectors.classList.toggle('off', !isEnabled);
-      btnToggleVectors.title = isEnabled ? 'Click to disable Error Vectors' : 'Click to enable Error Vectors';
+      updateChipState(btnToggleVectors, isEnabled, 'Click to disable Error Vectors', 'Click to enable Error Vectors');
     });
   }
 
@@ -327,37 +407,123 @@ function setupLayoutControls(): void {
 
 initializeComponents();
 
-function setMirrorStatus(msg: string, isLoading: boolean = false) {
-  mirrorMsg.textContent = msg;
-  if (isLoading) pulseIndicator.classList.add('loading');
-  else pulseIndicator.classList.remove('loading');
+// ========================================================
+// INGESTION LOGIC & WAVE TRANSITION
+// ========================================================
+const sampleClick = new Audio('/src/assets/sounds/osu-logo-select.wav');
+sampleClick.volume = 0.4;
+
+function playLogoClick(): void {
+  try {
+    sampleClick.currentTime = 0;
+    sampleClick.volume = 0.4;
+    sampleClick.play().catch(() => { });
+  } catch { }
 }
 
-// Ingestion Handlers
-replayInput.addEventListener('change', async (e) => {
-  const file = (e.target as HTMLInputElement).files?.[0];
-  if (file) handleReplayFile(file);
-});
+function setProgress(fraction: number): void {
+  if (!ringProgress) return;
+  const circumference = 892.2;
+  const offset = circumference * (1 - Math.max(0, Math.min(1, fraction)));
+  ringProgress.style.strokeDashoffset = offset.toString();
+}
 
-replayDropzone.addEventListener('dragover', (e) => {
-  e.preventDefault();
-  replayDropzone.classList.add('dragover');
-});
-replayDropzone.addEventListener('dragleave', () => replayDropzone.classList.remove('dragover'));
-replayDropzone.addEventListener('drop', (e) => {
-  e.preventDefault();
-  replayDropzone.classList.remove('dragover');
-  const file = e.dataTransfer?.files[0];
-  if (file) handleReplayFile(file);
-});
+function setupLogoRig(): void {
+  if (!logoHoverContainer || !logoBounceContainer) return;
 
-async function handleReplayFile(file: File) {
+  logoHoverContainer.addEventListener('mouseenter', () => {
+    logoHoverContainer.classList.add('hovered');
+  });
+
+  logoHoverContainer.addEventListener('mouseleave', () => {
+    logoHoverContainer.classList.remove('hovered');
+    logoBounceContainer.classList.remove('pressed');
+  });
+
+  logoBounceContainer.addEventListener('mousedown', (e: MouseEvent) => {
+    if (e.button !== 0) return;
+    logoBounceContainer.classList.add('pressed');
+  });
+
+  window.addEventListener('mouseup', () => {
+    logoBounceContainer.classList.remove('pressed');
+  });
+
+  logoBounceContainer.addEventListener('click', () => {
+    playLogoClick();
+    if (flashLayer) {
+      flashLayer.classList.remove('flashing');
+      void flashLayer.offsetWidth;
+      flashLayer.classList.add('flashing');
+      setTimeout(() => {
+        flashLayer.classList.remove('flashing');
+      }, 50);
+    }
+  });
+
+  if (replayInput) {
+    replayInput.addEventListener('change', async (e: Event) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (file) handleReplayFile(file);
+    });
+  }
+
+  if (beatmapInput) {
+    beatmapInput.addEventListener('change', async (e: Event) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (file) handleBeatmapOrPackageFile(file);
+    });
+  }
+
+  if (dockSubmitBtn) {
+    dockSubmitBtn.addEventListener('click', () => {
+      if (currentReplay && currentBeatmap) {
+        triggerEvaluation();
+      }
+    });
+  }
+
+  window.addEventListener('dragover', (e: DragEvent) => {
+    e.preventDefault();
+  });
+
+  window.addEventListener('drop', (e: DragEvent) => {
+    e.preventDefault();
+    const file = e.dataTransfer?.files[0];
+    if (!file) return;
+    const lower = file.name.toLowerCase();
+    if (lower.endsWith('.osr')) {
+      handleReplayFile(file);
+    } else if (lower.endsWith('.osu') || lower.endsWith('.osz') || lower.endsWith('.zip')) {
+      handleBeatmapOrPackageFile(file);
+    }
+  });
+}
+
+function revealDock(): void {
+  if (ingestionStage) {
+    ingestionStage.classList.add('dock-active');
+  }
+  updateDockReplayInfo();
+}
+
+function updateDockReplayInfo(): void {
+  if (!currentReplay) return;
+  if (dockReplayBar) dockReplayBar.style.display = 'flex';
+  if (dockPlayer) dockPlayer.textContent = currentReplay.playerName || 'Player';
+  if (dockHash) dockHash.textContent = currentReplay.beatmapHash ? currentReplay.beatmapHash.slice(0, 10) + '...' : '';
+  if (dockMods) {
+    dockMods.textContent = '';
+    renderModBadges(dockMods, currentReplay);
+  }
+}
+
+async function handleReplayFile(file: File): Promise<void> {
   try {
     const buffer = await file.arrayBuffer();
     currentReplay = await parseOsrReplay(buffer);
 
-    replayDropzone.classList.add('loaded');
-    replayDesc.textContent = `Loaded: ${file.name} (${currentReplay.playerName})`;
+    updateDockReplayInfo();
 
     if (!currentBeatmap && currentReplay.beatmapHash) {
       await autoFetchBeatmapFromMirror(currentReplay.beatmapHash);
@@ -369,27 +535,11 @@ async function handleReplayFile(file: File) {
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     alert(`Error parsing replay: ${msg}`);
+    revealDock();
   }
 }
 
-beatmapInput.addEventListener('change', async (e) => {
-  const file = (e.target as HTMLInputElement).files?.[0];
-  if (file) handleBeatmapOrPackageFile(file);
-});
-
-beatmapDropzone.addEventListener('dragover', (e) => {
-  e.preventDefault();
-  beatmapDropzone.classList.add('dragover');
-});
-beatmapDropzone.addEventListener('dragleave', () => beatmapDropzone.classList.remove('dragover'));
-beatmapDropzone.addEventListener('drop', (e) => {
-  e.preventDefault();
-  beatmapDropzone.classList.remove('dragover');
-  const file = e.dataTransfer?.files[0];
-  if (file) handleBeatmapOrPackageFile(file);
-});
-
-async function handleBeatmapOrPackageFile(file: File) {
+async function handleBeatmapOrPackageFile(file: File): Promise<void> {
   const lower = file.name.toLowerCase();
   try {
     if (lower.endsWith('.osz') || lower.endsWith('.zip')) {
@@ -405,15 +555,15 @@ async function handleBeatmapOrPackageFile(file: File) {
       currentBackgroundBlobUrl = currentPackage.backgroundBlobUrl || null;
       playfieldRenderer?.setBackground(currentBackgroundBlobUrl);
 
-      beatmapDropzone.classList.add('loaded');
-      beatmapDesc.textContent = `Loaded .osz: ${file.name} (${currentPackage.difficulties.length} diffs)`;
       matchPackageWithReplay();
     } else {
       const text = await file.text();
       currentBeatmap = parseOsuBeatmap(text);
-      beatmapDropzone.classList.add('loaded');
-      beatmapDesc.textContent = `Loaded .osu: ${currentBeatmap.metadata.title} [${currentBeatmap.metadata.version}]`;
-      triggerEvaluation();
+      if (currentReplay) {
+        triggerEvaluation();
+      } else {
+        revealDock();
+      }
     }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -421,7 +571,7 @@ async function handleBeatmapOrPackageFile(file: File) {
   }
 }
 
-function matchPackageWithReplay() {
+function matchPackageWithReplay(): void {
   if (!currentPackage || currentPackage.difficulties.length === 0) return;
 
   let selectedDiff: OszDifficultyEntry | null = null;
@@ -432,52 +582,68 @@ function matchPackageWithReplay() {
 
   if (selectedDiff) {
     currentBeatmap = selectedDiff.beatmap;
-    diffSelectorContainer.style.display = 'none';
+    triggerEvaluation();
   } else {
+    revealDock();
     renderDifficultySelector(currentPackage.difficulties);
     currentBeatmap = currentPackage.difficulties[0].beatmap;
   }
-
-  triggerEvaluation();
 }
 
-function renderDifficultySelector(diffs: OszDifficultyEntry[]) {
-  diffSelectorContainer.style.display = 'block';
+function renderDifficultySelector(diffs: OszDifficultyEntry[]): void {
+  if (diffLadder) diffLadder.style.display = 'flex';
+  if (dockSubmitBtn) dockSubmitBtn.style.display = 'block';
+  if (!diffButtons) return;
   diffButtons.innerHTML = '';
 
   diffs.forEach((d) => {
-    const btn = document.createElement('button');
-    btn.className = `diff-btn ${d.beatmap === currentBeatmap ? 'active' : ''}`;
+    const row = document.createElement('div');
+    row.className = `diff-row ${d.beatmap === currentBeatmap ? 'active' : ''}`;
     const estSR = PerformancePoints.estimateDifficultyAttributes(d.beatmap).starRating;
-    btn.textContent = `${d.diffName} (★ ${estSR.toFixed(2)})`;
+    row.innerHTML = `
+      <span>${d.diffName}</span>
+      <span class="diff-sr">★ ${estSR.toFixed(2)}</span>
+    `;
 
     calculateLazerDifficulty(d.beatmap, currentReplay?.mods || 0, currentReplay ? currentReplayRate : undefined).then(attrs => {
-      btn.textContent = `${d.diffName} (★ ${attrs.starRating.toFixed(2)})`;
-    }).catch(() => {
-      // Keep estimate
-    });
+      const srEl = row.querySelector('.diff-sr');
+      if (srEl) srEl.textContent = `★ ${attrs.starRating.toFixed(2)}`;
+    }).catch(() => { });
 
-    btn.onclick = () => {
+    row.onclick = () => {
       currentBeatmap = d.beatmap;
-      document.querySelectorAll('.diff-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      triggerEvaluation();
+      document.querySelectorAll('.diff-row').forEach(b => b.classList.remove('active'));
+      row.classList.add('active');
     };
-    diffButtons.appendChild(btn);
+    diffButtons.appendChild(row);
   });
 }
 
-async function autoFetchBeatmapFromMirror(hash: string) {
-  setMirrorStatus(`Looking up beatmap on public mirror for replay hash ${hash.slice(0, 8)}...`, true);
+async function autoFetchBeatmapFromMirror(hash: string): Promise<void> {
+  if (ingestionStage) {
+    ingestionStage.classList.add('fetching');
+  }
+  setProgress(0.2);
+
+  let progress = 0.2;
+  const progressTimer = setInterval(() => {
+    if (progress < 0.85) {
+      progress += 0.05;
+      setProgress(progress);
+    }
+  }, 150);
+
   try {
-    const result = await MirrorClient.fetchByMd5(hash, (msg) => {
-      setMirrorStatus(msg, true);
+    const result = await MirrorClient.fetchByMd5(hash, (_msg) => {
+      progress = Math.max(progress, 0.65);
+      setProgress(progress);
     });
+
+    clearInterval(progressTimer);
+    setProgress(1.0);
 
     currentBeatmap = result.beatmap.beatmap;
     currentBeatmapStarRating = result.difficultyRating;
-    beatmapDropzone.classList.add('loaded');
-    beatmapDesc.textContent = `Auto-fetched: ${currentBeatmap.metadata.title} [${currentBeatmap.metadata.version}]`;
 
     if (result.audioBlobUrl) {
       audioPlayer.src = result.audioBlobUrl;
@@ -487,23 +653,93 @@ async function autoFetchBeatmapFromMirror(hash: string) {
     currentBackgroundBlobUrl = result.backgroundBlobUrl || null;
     playfieldRenderer?.setBackground(currentBackgroundBlobUrl);
 
-    setMirrorStatus(`Mirror: Loaded beatmap #${result.beatmapId} (Set #${result.beatmapsetId})`, false);
-    triggerEvaluation();
+    setTimeout(() => {
+      if (ingestionStage) {
+        ingestionStage.classList.remove('fetching');
+      }
+      triggerEvaluation();
+    }, 250);
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    setMirrorStatus(`Mirror: Auto-fetch unavailable (${msg}). Please drop your .osz or .osu manually.`, false);
+    clearInterval(progressTimer);
+    if (ingestionStage) {
+      ingestionStage.classList.remove('fetching');
+    }
+    setProgress(0);
+    revealDock();
   }
 }
 
 /**
  * Triggers complete evaluation and switches view into the rich Analyzer Workspace
+ * via a two-pass wavy transition, ensuring EVERYTHING IS DONE LOADING before reveal.
  */
-async function triggerEvaluation() {
+let evalRunCounter = 0;
+let isEvaluating = false;
+
+async function triggerEvaluation(): Promise<void> {
   if (!currentReplay || !currentBeatmap) return;
+  if (isEvaluating) return;
+  isEvaluating = true;
+
+  const isFromIngestion = document.body.classList.contains('ingestion-active');
+
+  if (isFromIngestion && wavesViewport) {
+    // 1. Phase 1: COVER
+    // Waves rise up from bottom and blanket the screen
+    wavesViewport.classList.remove('is-revealing');
+    wavesViewport.classList.add('is-covering');
+
+    // Wait for the final wave (w4: delay 210ms + duration 800ms) to settle and cover the screen
+    await new Promise<void>((resolve) => setTimeout(resolve, 1050));
+
+    // 2. WHILE 100% COVERED:
+    // Switch views behind the solid wave cover
+    document.body.classList.remove('ingestion-active');
+    analyzerWorkspace.style.display = 'grid';
+    headerMetadata.style.display = 'flex';
+    if (beatmapDiffGrid) beatmapDiffGrid.style.display = 'grid';
+
+    // Await complete evaluation so EVERYTHING is done loading:
+    await performEvaluation();
+
+    // Double requestAnimationFrame to ensure browser & GPU paint is complete
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => resolve());
+      });
+    });
+
+    // 3. Phase 2: REVEAL
+    // Waves continue rising off the top, revealing the analyzer from bottom up!
+    wavesViewport.classList.remove('is-covering');
+    wavesViewport.classList.add('is-revealing');
+
+    // Wait for waves to clear off the top
+    await new Promise<void>((resolve) => setTimeout(resolve, 1050));
+
+    // Reset wave viewport state
+    wavesViewport.classList.remove('is-revealing');
+  } else {
+    document.body.classList.remove('ingestion-active');
+    analyzerWorkspace.style.display = 'grid';
+    headerMetadata.style.display = 'flex';
+    if (beatmapDiffGrid) beatmapDiffGrid.style.display = 'grid';
+    await performEvaluation();
+  }
+
+  isEvaluating = false;
+}
+
+async function performEvaluation(): Promise<void> {
+  if (!currentReplay || !currentBeatmap) return;
+  const runToken = ++evalRunCounter;
 
   // Run evaluator
   currentEval = evaluateReplaySession(currentReplay, currentBeatmap);
   currentReplayRate = getGameplayRateFromMods(currentReplay.soloScoreInfo?.mods, currentReplay.mods);
+  resetOdometers();
+  lastLiveTime = 0;
+  lastLiveIdx = -1;
 
   // Compute total duration and min lead-in time
   const firstFrameTime = currentReplay.frames[0]?.time || 0;
@@ -515,13 +751,6 @@ async function triggerEvaluation() {
   timeBus.setDuration(totalDuration);
   timeBus.setSkipGaps(currentReplay.skipGaps || []);
 
-  // Reveal workspace & collapse dropzones FIRST so DOM layout calculates canvas bounding rect
-  ingestionSection.style.display = 'none';
-  analyzerWorkspace.style.display = 'grid';
-
-  headerMetadata.style.display = 'flex';
-  statusBadge.className = 'badge green';
-  statusBadge.textContent = 'Telemetry Loaded';
   updateTopBar();
 
   // Calculate layout and force resize on canvases now that they are visible
@@ -587,33 +816,50 @@ async function triggerEvaluation() {
 
     maxPossiblePP = max4Skill;
 
-    // Precompute gradual note-by-note live PP matching osu!lazer HUD. Replays
-    // without a soloScoreInfo payload follow stable/classic score semantics.
     const isStable = !currentReplay.soloScoreInfo;
     const stepper = await createLazerGradualPerformance(currentBeatmap, currentReplay.mods, currentReplayRate, !isStable);
     precomputedLivePP = [];
     const totalEvents = prefixStats.length;
+    let lastPP: LazerPerformanceBreakdown | null = null;
     for (let i = 0; i < totalEvents; i++) {
       const stat = prefixStats[i];
-      const stepPP = stepper.next({
-        maxCombo: stat.maxComboSoFar,
-        count300: stat.c300,
-        count100: stat.c100,
-        count50: stat.c50,
-        countMiss: stat.cMiss,
-        sliderEndHits: stat.endsHit,
-        largeTickHits: stat.ticksHit
-      });
-      if (stepPP) {
-        precomputedLivePP.push({
-          totalPP: stepPP.totalPP,
-          aimPP: stepPP.aimPP,
-          speedPP: stepPP.speedPP,
-          accPP: stepPP.accPP,
-          readingPP: stepPP.readingPP,
-          flashlightPP: stepPP.flashlightPP,
-          effectiveMissCount: stepPP.effectiveMissCount
+      if (stat.ppStep) {
+        const stepPP = stepper.next({
+          maxCombo: stat.maxComboSoFar,
+          count300: stat.c300,
+          count100: stat.c100,
+          count50: stat.c50,
+          countMiss: stat.cMiss,
+          sliderEndHits: stat.endsHit,
+          largeTickHits: stat.ticksHit
         });
+        if (stepPP) {
+          lastPP = {
+            totalPP: stepPP.totalPP,
+            aimPP: stepPP.aimPP,
+            speedPP: stepPP.speedPP,
+            accPP: stepPP.accPP,
+            readingPP: stepPP.readingPP,
+            flashlightPP: stepPP.flashlightPP,
+            effectiveMissCount: stepPP.effectiveMissCount
+          };
+        }
+      }
+      precomputedLivePP.push(lastPP ?? {
+        totalPP: 0,
+        aimPP: 0,
+        speedPP: 0,
+        accPP: 0,
+        readingPP: 0,
+        flashlightPP: 0,
+        effectiveMissCount: 0
+      });
+      if ((i & 255) === 255) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        if (runToken !== evalRunCounter) {
+          stepper.free();
+          return;
+        }
       }
     }
     stepper.free();
@@ -648,7 +894,7 @@ async function triggerEvaluation() {
     }, currentDiffAttributes);
   }
 
-  // Set initial replay rate based on the replay's actual clock (e.g. DT@1.2x, DT@1.5x, HT@0.75x)
+  // Set initial replay rate based on the replay's actual clock
   const gameplayRate = currentReplayRate;
   playbackControls?.setInitialRate(gameplayRate);
 
@@ -673,61 +919,90 @@ async function triggerEvaluation() {
 }
 
 function buildPrefixStats(events: TimedHitEvent[]) {
-  prefixStats = [];
-  let c300 = 0;
-  let c100 = 0;
-  let c50 = 0;
-  let cMiss = 0;
-  let combo = 0;
-  let maxCombo = 0;
-  const declaredMaxCombo = currentReplay?.maxCombo ?? 0;
+  // Faithful per-object combo schedule (heads + slider repeats/tails/ticks,
+  // miss resets). See ComboTracker for the combo model.
+  const comboStats = buildPrefixCombo(events, currentBeatmap, {
+    ticksHit: currentReplay?.sliderTicks?.hit,
+    ticksMax: currentReplay?.sliderTicks?.max,
+    endsHit: currentReplay?.sliderEnds?.hit,
+    endsMax: currentReplay?.sliderEnds?.max
+  });
+  prefixStats = comboStats.map((s) => ({
+    time: s.time,
+    c300: s.c300,
+    c100: s.c100,
+    c50: s.c50,
+    cMiss: s.cMiss,
+    combo: s.combo,
+    maxComboSoFar: s.maxComboSoFar,
+    acc: calculateLazerAccuracy(s.c300, s.c100, s.c50, s.cMiss, s.ticksHit, s.maxTicks, s.endsHit, s.maxEnds),
+    ticksHit: s.ticksHit,
+    maxTicks: s.maxTicks,
+    endsHit: s.endsHit,
+    maxEnds: s.maxEnds,
+    ppStep: s.ppStep,
+    headIdx: s.headIdx
+  }));
+}
 
-  for (let i = 0; i < events.length; i++) {
-    const e = events[i];
-    if (e.judgement === HitJudgement.Great) {
-      c300++;
-      combo++;
-    } else if (e.judgement === HitJudgement.Ok) {
-      c100++;
-      combo++;
-    } else if (e.judgement === HitJudgement.Meh) {
-      c50++;
-      combo++;
-    } else {
-      cMiss++;
-      combo = 0;
-    }
-    const progress = events.length > 0 ? (i + 1) / events.length : 1;
-    const ticksHit = currentReplay?.sliderTicks ? Math.round(currentReplay.sliderTicks.hit * progress) : 0;
-    const maxTicks = currentReplay?.sliderTicks ? Math.round(currentReplay.sliderTicks.max * progress) : 0;
-    const endsHit = currentReplay?.sliderEnds ? Math.round(currentReplay.sliderEnds.hit * progress) : 0;
-    const maxEnds = currentReplay?.sliderEnds ? Math.round(currentReplay.sliderEnds.max * progress) : 0;
+function handleAccuracyConditions(stat: PrefixHitStat): void {
+  const metaRank = document.getElementById('meta-rank');
+  if (!metaRank) return;
 
-    // In-game combo also increments on slider ticks and slider tails. For
-    // replays without soloScoreInfo the tick/tail split is unknown, so scale
-    // the replay's declared max combo by progress as the live estimate (the
-    // final step lands exactly on the declared value).
-    const recordedCombo = Math.min(combo + ticksHit + endsHit, declaredMaxCombo || combo + ticksHit + endsHit);
-    const estimateMaxCombo = declaredMaxCombo > 0 ? Math.round(declaredMaxCombo * Math.min(1, progress)) : 0;
-    const maxComboSoFar = Math.max(maxCombo, recordedCombo, estimateMaxCombo);
-    maxCombo = maxComboSoFar;
+  const mods = typeof currentReplay?.soloScoreInfo?.mods === 'number'
+    ? currentReplay.soloScoreInfo.mods
+    : (typeof currentReplay?.mods === 'number' ? currentReplay.mods : 0);
 
-    const acc = calculateLazerAccuracy(c300, c100, c50, cMiss, ticksHit, maxTicks, endsHit, maxEnds);
-    prefixStats.push({
-      time: e.targetTime,
-      c300,
-      c100,
-      c50,
-      cMiss,
-      combo: recordedCombo,
-      maxComboSoFar,
-      acc,
-      ticksHit,
-      maxTicks,
-      endsHit,
-      maxEnds
-    });
+  const isSilver = isHiddenFlashlightTraceableOrBlindsEnabled(mods);
+
+  let badgeName = 'GradeSmall-D.svg';
+
+  if (stat.acc < 70.0) {
+    badgeName = 'GradeSmall-D.svg';
+  } else if (stat.acc < 80.0) {
+    badgeName = 'GradeSmall-C.svg';
+  } else if (stat.acc < 90.0) {
+    badgeName = 'GradeSmall-B.svg';
+  } else if (stat.acc < 95.0 || (stat.acc >= 95.0 && stat.cMiss >= 1)) {
+    badgeName = 'GradeSmall-A.svg';
+  } else if (stat.acc >= 100.0) {
+    badgeName = isSilver ? 'GradeSmall-SS-Silver.svg' : 'GradeSmall-SS.svg';
+  } else if (stat.acc >= 95.0) {
+    badgeName = isSilver ? 'GradeSmall-S-Silver.svg' : 'GradeSmall-S.svg';
   }
+
+  const assetPath = `/src/assets/icons/Badges/${badgeName}`;
+
+  // Only update innerHTML if the badge has actually changed to prevent DOM thrashing
+  if (metaRank.dataset.currentRank !== badgeName) {
+    metaRank.dataset.currentRank = badgeName;
+    metaRank.innerHTML = `<img src="${assetPath}" alt="Rank" class="rank-badge-svg" />`;
+  }
+
+  metaRank.hidden = false;
+}
+
+function isHiddenFlashlightTraceableOrBlindsEnabled(mods: number): boolean {
+  const HIDDEN = 1 << 3;
+  const FLASHLIGHT = 1 << 10;
+  // Stable mods only; lazer mods are stored separately.
+  return (mods & (HIDDEN | FLASHLIGHT)) !== 0;
+}
+
+/**
+ * Stable PP row: persistent live/max spans so GSAP tweens never lose their
+ * target to an innerHTML rewrite. Created once, then only textContent moves.
+ */
+function ensurePPDom(metaPP: HTMLElement, maxVal: number): HTMLElement | null {
+  let liveEl = document.getElementById('meta-pp-live');
+  let maxEl = document.getElementById('meta-max-pp');
+  if (!liveEl || !maxEl || liveEl.parentElement !== metaPP) {
+    metaPP.innerHTML = `<span class="meta-live" id="meta-pp-live">0pp</span> <span class="sv-sub" id="meta-max-pp">/ ${Math.round(maxVal)}pp</span>`;
+    liveEl = document.getElementById('meta-pp-live');
+    maxEl = document.getElementById('meta-max-pp');
+  }
+  if (maxEl) maxEl.textContent = `/ ${Math.round(maxVal)}pp`;
+  return liveEl as HTMLElement | null;
 }
 
 function updateLiveStats(currentTimeMs: number) {
@@ -763,19 +1038,45 @@ function updateLiveStats(currentTimeMs: number) {
     }
   }
 
+  // Seek jumps (scrub, incident seek, skip gaps) snap instantly; linear
+  // playback rolls each digit strip toward the new target with motion blur.
+  const timeJump = Math.abs(currentTimeMs - lastLiveTime);
+  const idxJump = Math.abs(matchIdx - lastLiveIdx);
+  const snap = timeJump > 750 || idxJump > 12;
+  lastLiveTime = currentTimeMs;
+  lastLiveIdx = matchIdx;
+
   if (matchIdx < 0) {
-    metaAcc.textContent = '100.00%';
-    metaCombo.textContent = '0x';
-    count300.textContent = '0';
-    count100.textContent = '0';
-    count50.textContent = '0';
-    countMiss.textContent = '0';
-    metaUR.textContent = currentEval.overallUR.toFixed(2);
+    odoSet('acc', metaAcc, 100, ODO_ACC, snap);
+    odoSet('combo', metaCombo, 0, ODO_COMBO, snap);
+    odoSet('c300', count300, 0, ODO_INT, snap);
+    odoSet('c100', count100, 0, ODO_INT, snap);
+    odoSet('c50', count50, 0, ODO_INT, snap);
+    odoSet('cmiss', countMiss, 0, ODO_INT, snap);
+    odoSet('ur', metaUR, currentEval.overallUR, ODO_UR, snap);
     metaUR.title = `Overall UR: ${currentEval.overallUR.toFixed(2)}`;
+
+    handleAccuracyConditions({
+      time: 0,
+      c300: 0,
+      c100: 0,
+      c50: 0,
+      cMiss: 0,
+      combo: 0,
+      maxComboSoFar: 0,
+      acc: 100.0,
+      ticksHit: 0,
+      maxTicks: 0,
+      endsHit: 0,
+      maxEnds: 0,
+      ppStep: false,
+      headIdx: -1
+    });
 
     if (metaPP && maxPossiblePP) {
       const maxVal = maxPossiblePP.totalPP;
-      metaPP.innerHTML = `0pp <span class="meta-sub" id="meta-max-pp" style="font-size: 11px; color: var(--text-secondary); font-weight: normal;">/ ${Math.round(maxVal)}pp</span>`;
+      const liveEl = ensurePPDom(metaPP, maxVal);
+      odoSet('pp', liveEl, 0, ODO_PP, snap);
       metaPP.title = `osu!lazer Performance: 0pp / ${Math.round(maxVal)}pp`;
       if (skillAim) skillAim.textContent = 'Aim 0%';
       if (skillSpeed) skillSpeed.textContent = 'Spd 0%';
@@ -785,12 +1086,14 @@ function updateLiveStats(currentTimeMs: number) {
   } else {
     const stat = prefixStats[matchIdx];
 
-    metaAcc.textContent = `${stat.acc.toFixed(2)}%`;
-    metaCombo.textContent = `${stat.combo}x`;
-    count300.textContent = String(stat.c300);
-    count100.textContent = String(stat.c100);
-    count50.textContent = String(stat.c50);
-    countMiss.textContent = String(stat.cMiss);
+    odoSet('acc', metaAcc, stat.acc, ODO_ACC, snap);
+    odoSet('combo', metaCombo, stat.combo, ODO_COMBO, snap);
+    odoSet('c300', count300, stat.c300, ODO_INT, snap);
+    odoSet('c100', count100, stat.c100, ODO_INT, snap);
+    odoSet('c50', count50, stat.c50, ODO_INT, snap);
+    odoSet('cmiss', countMiss, stat.cMiss, ODO_INT, snap);
+
+    handleAccuracyConditions(stat);
 
     // Dynamic Performance Points matching osu!lazer HUD
     if (metaPP && maxPossiblePP) {
@@ -815,7 +1118,8 @@ function updateLiveStats(currentTimeMs: number) {
       const accPct = maxPossiblePP.accPP > 0 ? Math.round((displayAcc / maxPossiblePP.accPP) * 100) : 0;
       const readPct = maxPossiblePP.readingPP > 0 ? Math.round((displayReading / maxPossiblePP.readingPP) * 100) : 0;
 
-      metaPP.innerHTML = `${Math.round(displayTotal)}pp <span class="meta-sub" id="meta-max-pp" style="font-size: 11px; color: var(--text-secondary); font-weight: normal;">/ ${Math.round(maxVal)}pp</span>`;
+      const liveEl = ensurePPDom(metaPP, maxVal);
+      odoSet('pp', liveEl, displayTotal, ODO_PP, snap);
       metaPP.title = `osu!lazer Performance: ${Math.round(displayTotal)}pp / ${Math.round(maxVal)}pp | Aim: ${aimPct}% (${Math.round(displayAim)}pp) | Speed: ${spdPct}% (${Math.round(displaySpeed)}pp) | Acc: ${accPct}% (${Math.round(displayAcc)}pp) | Reading: ${readPct}% (${Math.round(displayReading)}pp)`;
 
       if (skillAim) {
@@ -836,17 +1140,21 @@ function updateLiveStats(currentTimeMs: number) {
       }
     }
 
-    // Cumulative UR matching osu! standard results
+    // Cumulative UR matching osu! standard results. cumulativeUR is indexed
+    // per hitobject head, while matchIdx walks sub-steps — index with the
+    // entry's head so UR tracks the latest judged note instead of drifting
+    // and freezing on the overall fallback.
+    const headIdx = stat.headIdx;
+    let urTarget = currentEval.overallUR;
     if (currentEval.cumulativeUR && currentEval.cumulativeUR.length > 0) {
-      if (matchIdx >= 0 && matchIdx < currentEval.cumulativeUR.length && currentEval.cumulativeUR[matchIdx] > 0) {
-        metaUR.textContent = currentEval.cumulativeUR[matchIdx].toFixed(2);
-      } else {
-        metaUR.textContent = currentEval.overallUR.toFixed(2);
+      if (headIdx >= 0 && headIdx < currentEval.cumulativeUR.length && currentEval.cumulativeUR[headIdx] > 0) {
+        urTarget = currentEval.cumulativeUR[headIdx];
       }
-    } else {
-      metaUR.textContent = currentEval.overallUR.toFixed(2);
     }
+    odoSet('ur', metaUR, urTarget, ODO_UR, snap);
     metaUR.title = `Overall UR: ${currentEval.overallUR.toFixed(2)}`;
+
+
   }
 }
 
@@ -855,14 +1163,13 @@ function updateTopBar() {
 
   const topTitle = document.getElementById('top-title')!;
   const topSubtitle = document.getElementById('top-subtitle')!;
-  const metaPlayer = document.getElementById('meta-player')!;
   const metaModsContainer = document.getElementById('meta-mods-container')!;
+  const srPill = document.getElementById('meta-sr-pill') as HTMLElement | null;
 
   const b = currentBeatmap;
   const r = currentReplay;
   const eff = calculateEffectiveDifficulty(b.difficulty, r.mods, currentReplayRate);
   const starRating = currentLazerDiff?.starRating ?? currentDiffAttributes?.starRating;
-  const srText = starRating ? `★ ${starRating.toFixed(2)} • ` : '';
 
   const uninherited = (b.timingPoints || []).filter(tp => tp.uninherited || tp.beatLength > 0);
   const baseBpm = uninherited.length > 0 ? Math.round(60000 / uninherited[0].beatLength) : 0;
@@ -870,41 +1177,196 @@ function updateTopBar() {
   const effectiveBpm = Math.round(baseBpm * gameplayRate);
   let bpmText = '';
   if (baseBpm > 0) {
-    bpmText = gameplayRate !== 1.0 ? `${effectiveBpm} BPM (${baseBpm}) • ` : `${baseBpm} BPM • `;
+    bpmText = gameplayRate !== 1.0 ? `${effectiveBpm} BPM (${baseBpm})` : `${baseBpm} BPM`;
   }
 
-  topTitle.textContent = `${b.metadata.artist} - ${b.metadata.title}`;
-  topSubtitle.textContent = `[${b.metadata.version}] • ${srText}${bpmText}HP ${eff.hp.toFixed(1)} • CS ${eff.cs.toFixed(1)} • OD ${eff.od.toFixed(1)} • AR ${eff.ar.toFixed(1)}`;
+  topTitle.textContent = `${b.metadata.artist} - ${b.metadata.title} [${b.metadata.version}]`;
+  const subParts = [r.playerName, b.metadata.creator, 'osu!standard', 'lazer ruleset'].filter((p) => p && p.length > 0);
+  topSubtitle.textContent = subParts.join(' • ');
+  const diffParts = [
+    bpmText,
+    `HP ${eff.hp.toFixed(1)}`,
+    `CS ${eff.cs.toFixed(1)}`,
+    `OD ${eff.od.toFixed(1)}`,
+    `AR ${eff.ar.toFixed(1)}`,
+  ].filter((p) => p && p.length > 0);
+  topSubtitle.title = diffParts.join(' • ');
 
-  metaPlayer.textContent = r.playerName;
+  // Update 2x2 Beatmap Difficulty Grid (CS, HP, OD, AR with buff/nerf indicator)
+  if (beatmapDiffGrid) {
+    beatmapDiffGrid.style.display = 'grid';
 
-  // Render Slider Tracking Badges if present in soloScoreInfo
-  const slidersContainer = document.getElementById('meta-sliders-container');
-  const metaTicks = document.getElementById('meta-slider-ticks');
-  const metaEnds = document.getElementById('meta-slider-ends');
-  if (slidersContainer && (r.sliderTicks || r.sliderEnds)) {
-    slidersContainer.style.display = 'flex';
-    if (metaTicks && r.sliderTicks) {
-      metaTicks.textContent = `${r.sliderTicks.hit}/${r.sliderTicks.max}`;
+    const updateDiffCell = (valId: string, cellId: string, statName: string, baseVal: number, effVal: number) => {
+      const valEl = document.getElementById(valId);
+      const cellEl = document.getElementById(cellId);
+      if (!valEl) return;
+
+      valEl.textContent = effVal.toFixed(1);
+      valEl.classList.remove('stat-buff', 'stat-nerf');
+
+      const delta = effVal - baseVal;
+      if (delta > 0.05) {
+        valEl.classList.add('stat-buff');
+        if (cellEl) cellEl.title = `${statName}: ${baseVal.toFixed(1)} → ${effVal.toFixed(1)} (Buffed by mods)`;
+      } else if (delta < -0.05) {
+        valEl.classList.add('stat-nerf');
+        if (cellEl) cellEl.title = `${statName}: ${baseVal.toFixed(1)} → ${effVal.toFixed(1)} (Nerfed by mods)`;
+      } else {
+        if (cellEl) cellEl.title = `${statName}: ${baseVal.toFixed(1)}`;
+      }
+    };
+
+    updateDiffCell('meta-diff-cs', 'cell-cs', 'Circle Size (CS)', b.difficulty.circleSize, eff.cs);
+    updateDiffCell('meta-diff-hp', 'cell-hp', 'HP Drain (HP)', b.difficulty.hpDrainRate, eff.hp);
+    updateDiffCell('meta-diff-od', 'cell-od', 'Overall Difficulty (OD)', b.difficulty.overallDifficulty, eff.od);
+    updateDiffCell('meta-diff-ar', 'cell-ar', 'Approach Rate (AR)', b.difficulty.approachRate, eff.ar);
+  }
+
+  if (srPill) {
+    if (starRating) {
+      srPill.innerHTML = `<i id="meta-sr-star" class="sr-star fa-solid fa-star"></i> ${starRating.toFixed(2)}`;
+      const srStar = document.getElementById('meta-sr-star') as HTMLElement | null;
+      if (srStar) {
+        srStar.style.color = getDiffTextColor(starRating)
+        srStar.style.fontSize = '9.6px';
+      };
+      srPill.style.backgroundColor = getDiffColor(starRating);
+      srPill.style.color = getDiffTextColor(starRating);
+      srPill.hidden = false;
+    } else {
+      srPill.hidden = true;
     }
-    if (metaEnds && r.sliderEnds) {
-      metaEnds.textContent = `${r.sliderEnds.hit}/${r.sliderEnds.max}`;
-    }
-  } else if (slidersContainer) {
-    slidersContainer.style.display = 'none';
   }
 
-  // Render Mod Badges
-  metaModsContainer.innerHTML = '';
-  if (r.mods === 0) {
-    metaModsContainer.innerHTML = '<span class="badge">NM</span>';
-  } else {
-    if (r.mods & OsuMods.Hidden) metaModsContainer.innerHTML += '<span class="badge gold" style="margin-right:4px;">HD</span>';
-    if (r.mods & OsuMods.HardRock) metaModsContainer.innerHTML += '<span class="badge red" style="margin-right:4px;">HR</span>';
-    if (r.mods & OsuMods.DoubleTime) metaModsContainer.innerHTML += '<span class="badge pink" style="margin-right:4px;">DT</span>';
-    if (r.mods & OsuMods.Easy) metaModsContainer.innerHTML += '<span class="badge cyan" style="margin-right:4px;">EZ</span>';
-    if (r.mods & OsuMods.HalfTime) metaModsContainer.innerHTML += '<span class="badge" style="margin-right:4px;">HT</span>';
-  }
+  // if (rankTile) {
+  //   const rank = (r.rank || '').toUpperCase();
+  //   if (rank) {
+  //     rankTile.textContent = rank;
+  //     const cls = rank.startsWith('X') ? 'rk-ss' : rank.startsWith('S') ? 'rk-s' : rank === 'A' ? 'rk-a' : 'rk-other';
+  //     rankTile.className = `rank-tile ${cls}`;
+  //     rankTile.hidden = false;
+  //   } else {
+  //     rankTile.hidden = true;
+  //   }
+  // }
+
+  // Render lazer-style Mod icons (frame + extender + type colours)
+  renderModBadges(metaModsContainer, r);
+
+  // Reserve worst-case widths for live numeric slots so digit growth
+  // (12pp -> 2000pp, 9x -> 9999x) never reflows the header row.
+  reserveHstatsWidths();
 
   updateLiveStats(timeBus.getCurrentTime());
+}
+
+/**
+ * Sizes each live numeric slot in .hstats to its worst-case width for the
+ * loaded map/score. Digit counts come from beatmap data (max combo, max PP,
+ * object count); each slot is built from the font's actual widest digit plus
+ * a redundant spacing slack, so growth consumes reserved space instead of
+ * pushing siblings. Called on every updateTopBar so early calls (before PP
+ * attributes exist) simply fill in more slots once the data arrives.
+ */
+let measureCtx: CanvasRenderingContext2D | null = null;
+let measureCtxReady = false;
+
+function ensureMeasureCtx(): CanvasRenderingContext2D | null {
+  if (!measureCtxReady) {
+    measureCtxReady = true;
+    measureCtx = document.createElement('canvas').getContext('2d');
+  }
+  return measureCtx;
+}
+
+/** Widest advance of 0-9 in the element's own rendered font. */
+function widestDigitPx(el: Element): number {
+  const ctx = ensureMeasureCtx();
+  if (!ctx) return 0;
+  const cs = getComputedStyle(el);
+  ctx.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+  let w = 0;
+  for (let d = 0; d <= 9; d++) {
+    w = Math.max(w, ctx.measureText(String(d)).width);
+  }
+  return w;
+}
+
+/**
+ * Worst-case pixel width for `digitCount` digits plus fixed prefix/suffix
+ * text, measured in the element's real font with redundant slack.
+ * Returns 0 when measurement is unavailable (caller keeps CSS fallback).
+ */
+function worstCaseWidth(el: Element, digitCount: number, prefix = '', suffix = '', slackPx = 4): number {
+  const ctx = ensureMeasureCtx();
+  if (!ctx) return 0;
+  const digitW = widestDigitPx(el);
+  if (digitW <= 0) return 0;
+  const fixedW = ctx.measureText(prefix).width + ctx.measureText(suffix).width;
+  return Math.ceil(digitW * Math.max(0, digitCount) + fixedW) + slackPx;
+}
+
+/** Reserves a worst-case width on a persistent (non-rewritten) element. */
+function reserveWidth(elId: string, digitCount: number, prefix = '', suffix = ''): void {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  const w = worstCaseWidth(el, digitCount, prefix, suffix);
+  if (w > 0) el.style.minWidth = `${w}px`;
+}
+
+function reserveHstatsWidths(): void {
+  if (!currentBeatmap) return;
+  const digits = (n: number) => String(Math.max(0, Math.round(n))).length;
+
+  const mapMaxCombo = currentLazerDiff?.maxCombo
+    ?? currentDiffAttributes?.maxCombo
+    ?? currentReplay?.maxCombo
+    ?? currentBeatmap.hitObjects.length;
+
+  // Static ceiling: max combo achievable on this beatmap. Set once per load,
+  // never touched by the per-frame live stats.
+  const comboMaxEl = document.getElementById('meta-combo-max');
+  if (comboMaxEl) comboMaxEl.textContent = `/ ${mapMaxCombo}x`;
+
+  // Ghost digit slots: each odometer always renders this many integer
+  // windows (invisible when leading), so values stay right-aligned and the
+  // stat box width is inherently stable at the digit level.
+  odoMinInt.set('combo', digits(mapMaxCombo));
+
+  // Combo box fits the whole inline row (live + static ceiling); the small
+  // row is static text, so the box is simply both worst cases back to back.
+  const comboEl = document.getElementById('meta-combo');
+  const comboBox = comboEl?.parentElement;
+  if (comboEl && comboBox) {
+    const comboDigits = digits(mapMaxCombo);
+    const w = worstCaseWidth(comboEl, comboDigits, '', 'x ')
+      + (comboMaxEl ? worstCaseWidth(comboMaxEl, comboDigits, '/ ', 'x') : 0);
+    if (w > 0) comboBox.style.minWidth = `${w}px`;
+  }
+
+  reserveWidth('meta-acc', 3, '', '.00%');
+  reserveWidth('meta-ur', 3, '', '.88');
+
+  // PP box fits the whole inline row; the "/ max" suffix is static text.
+  // The live span is recreated every frame, but the box persists — nothing
+  // per-frame needed.
+  const maxPP = maxPossiblePP ? Math.round(maxPossiblePP.totalPP) : 0;
+  if (maxPP > 0) {
+    odoMinInt.set('pp', digits(maxPP));
+    const ppBox = document.getElementById('meta-pp');
+    const liveEl = document.getElementById('meta-pp-live') ?? ppBox;
+    const subEl = document.getElementById('meta-max-pp');
+    if (ppBox && liveEl) {
+      const ppDigits = digits(maxPP);
+      const w = worstCaseWidth(liveEl, ppDigits, '', 'pp ')
+        + (subEl ? worstCaseWidth(subEl, ppDigits, '/ ', 'pp') : 0);
+      if (w > 0) ppBox.style.minWidth = `${w}px`;
+    }
+  }
+
+  const countDigits = digits(currentBeatmap.hitObjects.length);
+  for (const key of ['c300', 'c100', 'c50', 'cmiss']) odoMinInt.set(key, countDigits);
+  for (const id of ['meta-count-300', 'meta-count-100', 'meta-count-50', 'meta-count-miss']) {
+    reserveWidth(id, countDigits);
+  }
 }

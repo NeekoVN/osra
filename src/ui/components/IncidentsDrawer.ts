@@ -9,7 +9,7 @@ export class IncidentsDrawer {
   private allEvents: TimedHitEvent[] = [];
   private fingerLocks: FingerLockEvent[] = [];
   private patterns: TapPattern[] = [];
-  private currentFilter: 'all' | 'desync' | 'fingerlock' | 'patterns' | 'misses' = 'desync';
+  private currentFilter: 'all' | 'desync' | 'fingerlock' | 'patterns' | 'misses' = 'all';
 
   constructor(container: HTMLElement, timeBus: TimeBus) {
     this.container = container;
@@ -30,34 +30,65 @@ export class IncidentsDrawer {
   public render(): void {
     this.container.innerHTML = '';
 
-    // Tab bar
-    const tabs = document.createElement('div');
-    tabs.className = 'incident-tabs';
-
     const isTapDesync = (e: TimedHitEvent) => e.desyncType === DesyncType.EarlyTap || e.desyncType === DesyncType.LateTap || e.desyncType === DesyncType.SpeedMiss;
     const desyncsCount = this.allEvents.filter(isTapDesync).length;
     const missesCount = this.allEvents.filter(e => e.judgement === HitJudgement.Miss).length;
 
+    // Tabs bar: the tabs ARE the panel header (Penpot design), with the
+    // minimize toggle pinned at the right end of the same row.
+    const tabsbar = document.createElement('div');
+    tabsbar.className = 'incident-tabsbar';
+
+    const tabs = document.createElement('div');
+    tabs.className = 'incident-tabs';
+    tabs.setAttribute('role', 'tablist');
+    tabs.setAttribute('aria-label', 'Incident categories');
+
     const tabDefs = [
+      { id: 'all', label: 'All Incidents' },
       { id: 'desync', label: `Tap Desync (${desyncsCount})` },
       { id: 'fingerlock', label: `Finger Lock (${this.fingerLocks.length})` },
       { id: 'patterns', label: `Patterns (${this.patterns.length})` },
-      { id: 'misses', label: `Misses (${missesCount})` },
-      { id: 'all', label: `All Incidents` }
+      { id: 'misses', label: `Misses (${missesCount})` }
     ];
 
     tabDefs.forEach(t => {
       const btn = document.createElement('button');
       btn.className = `incident-tab-btn ${this.currentFilter === t.id ? 'active' : ''}`;
       btn.textContent = t.label;
+      btn.setAttribute('role', 'tab');
+      btn.setAttribute('aria-selected', this.currentFilter === t.id ? 'true' : 'false');
       btn.onclick = () => {
         this.currentFilter = t.id as typeof this.currentFilter;
         this.render();
       };
+      btn.onkeydown = (e) => {
+        if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+          e.preventDefault();
+          const btns = [...tabs.querySelectorAll('.incident-tab-btn')];
+          const idx = btns.indexOf(btn);
+          const ni = Math.max(0, Math.min(btns.length - 1, idx + (e.key === 'ArrowRight' ? 1 : -1)));
+          (btns[ni] as HTMLElement).focus();
+          (btns[ni] as HTMLElement).click();
+        }
+      };
       tabs.appendChild(btn);
     });
 
-    this.container.appendChild(tabs);
+    tabsbar.appendChild(tabs);
+
+    const panel = document.getElementById('incidents-panel');
+    const isMin = panel?.classList.contains('minimized') ?? false;
+    const toggle = document.createElement('button');
+    toggle.className = 'btn-panel-action';
+    toggle.id = 'btn-toggle-events';
+    toggle.title = isMin ? 'Expand Events Panel' : 'Minimize Events Panel';
+    toggle.innerHTML = isMin
+      ? `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>`
+      : `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line></svg>`;
+    tabsbar.appendChild(toggle);
+
+    this.container.appendChild(tabsbar);
 
     // List container
     const list = document.createElement('div');
@@ -88,12 +119,10 @@ export class IncidentsDrawer {
                   : 'BURST (3-11)';
 
           item.innerHTML = `
-            <div class="incident-meta">
-              <span class="incident-time">${mins}:${secs.padStart(5, '0')}</span>
-              <span class="badge ${badgeClass}">${badgeLabel}</span>
-              <span class="badge gold">${p.estimatedBpm} BPM</span>
-            </div>
-            <div class="incident-desc">${p.label} (avg spacing ${p.avgIntervalMs}ms)</div>
+            <span class="flag ${badgeClass}"></span>
+            <span class="incident-time">${mins}:${secs.padStart(5, '0')}</span>
+            <span class="incident-what">${badgeLabel}</span>
+            <span class="incident-desc" title="${p.label} (avg spacing ${p.avgIntervalMs}ms)">${p.label} (avg spacing ${p.avgIntervalMs}ms) · ${p.estimatedBpm} BPM</span>
             <button class="btn-seek"><svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 20 12 6 20 6 4"></polygon></svg>Seek</button>
           `;
           item.querySelector('.btn-seek')?.addEventListener('click', () => {
@@ -112,29 +141,26 @@ export class IncidentsDrawer {
           const mins = Math.floor(f.time / 60000);
           const secs = ((f.time % 60000) / 1000).toFixed(2);
 
-          const patternBadge = f.patternType === 'deathstream'
-            ? `<span class="badge red">Deathstream Lock (${f.patternNoteCount} notes @ ${f.patternBpm} BPM)</span>`
-            : f.patternType === 'stream'
-              ? `<span class="badge purple">Stream Lock (${f.patternNoteCount} notes @ ${f.patternBpm} BPM)</span>`
-              : f.patternType === 'tech_alt'
-                ? `<span class="badge orange">Tech Alt Lock (${f.patternNoteCount} notes @ ${f.patternBpm} BPM)</span>`
-                : f.patternType === 'alt'
-                  ? `<span class="badge gold">Alt Lock (${f.patternNoteCount} notes @ ${f.patternBpm} BPM)</span>`
-                  : f.patternType === 'burst'
-                    ? `<span class="badge cyan">Burst Lock (${f.patternNoteCount} notes @ ${f.patternBpm} BPM)</span>`
-                    : '';
-
           const desc = f.patternType
             ? `Alternating ${f.patternType} lock during ${f.patternLabel}: both ${f.key1} and ${f.key2} held for ${f.overlapMs}ms`
             : `Rapid alternating lock: both ${f.key1} and ${f.key2} held for ${f.overlapMs}ms`;
+          const flagClass = f.patternType === 'deathstream' ? 'red'
+            : f.patternType === 'stream' ? 'purple'
+            : f.patternType === 'tech_alt' ? 'orange'
+            : f.patternType === 'alt' ? 'gold'
+            : f.patternType === 'burst' ? 'cyan' : 'gold';
+
+          const whatLabel = f.patternType === 'deathstream' ? 'DEATHSTREAM LOCK'
+            : f.patternType === 'stream' ? 'STREAM LOCK'
+            : f.patternType === 'tech_alt' ? 'TECH ALT LOCK'
+            : f.patternType === 'alt' ? 'ALT LOCK'
+            : f.patternType === 'burst' ? 'BURST LOCK' : 'FINGER LOCK';
 
           item.innerHTML = `
-            <div class="incident-meta">
-              <span class="incident-time">${mins}:${secs.padStart(5, '0')}</span>
-              <span class="badge gold">${f.overlapMs}ms Overlap</span>
-              ${patternBadge}
-            </div>
-            <div class="incident-desc">${desc}</div>
+            <span class="flag ${flagClass}"></span>
+            <span class="incident-time">${mins}:${secs.padStart(5, '0')}</span>
+            <span class="incident-what">${whatLabel}</span>
+            <span class="incident-desc" title="${desc}">${desc}</span>
             <button class="btn-seek"><svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 20 12 6 20 6 4"></polygon></svg>Seek</button>
           `;
           item.querySelector('.btn-seek')?.addEventListener('click', () => {
@@ -160,27 +186,25 @@ export class IncidentsDrawer {
           const secs = ((e.targetTime % 60000) / 1000).toFixed(2);
 
           const isDesync = isTapDesync(e);
-          const badgeClass = isDesync ? 'purple' : (e.judgement === HitJudgement.Miss ? 'red' : 'gold');
-          const badgeText = isDesync
+          const flagClass = isDesync ? 'purple' : (e.judgement === HitJudgement.Miss ? 'red' : 'gold');
+          const whatText = isDesync
             ? (e.desyncType === DesyncType.EarlyTap ? 'EARLY TAP'
               : e.desyncType === DesyncType.LateTap ? 'LATE TAP'
               : 'CURSOR DESYNC')
             : (e.judgement === HitJudgement.Miss ? (e.desyncType === DesyncType.MisaimInWindow ? 'MISAIM' : 'AIM MISS') : `${e.judgement} (${e.timeOffset > 0 ? '+' : ''}${e.timeOffset.toFixed(0)}ms)`);
+          const noteText = e.desyncType === DesyncType.EarlyTap ? `Tapped ${Math.abs(e.timeOffset).toFixed(0)}ms early (cursor was ${e.distanceToCenter.toFixed(1)}px from center)` :
+            e.desyncType === DesyncType.LateTap ? `Tapped ${e.timeOffset.toFixed(0)}ms late (cursor left circle)` :
+            e.desyncType === DesyncType.SpeedMiss ? `Cursor moved past circle (tap was ${e.timeOffset > 0 ? '+' : ''}${e.timeOffset.toFixed(0)}ms, Δ ${e.distanceToCenter.toFixed(1)}px)` :
+              e.desyncType === DesyncType.TrueAimMiss ? `Cursor missed circle by ${e.distanceToCenter.toFixed(1)}px (no tap in window)` :
+                e.desyncType === DesyncType.MisaimInWindow ? `Cursor missed circle by ${e.distanceToCenter.toFixed(1)}px during tap` :
+                  `Hit offset: ${e.timeOffset > 0 ? '+' : ''}${e.timeOffset.toFixed(1)}ms | Distance: ${e.distanceToCenter.toFixed(1)}px (${e.marginUsagePercent.toFixed(0)}% margin)`;
 
           item.innerHTML = `
-            <div class="incident-meta">
-              <span class="incident-time">${mins}:${secs.padStart(5, '0')}</span>
-              <span class="incident-object">#${e.objectIndex}</span>
-              <span class="badge ${badgeClass}">${badgeText}</span>
-            </div>
-            <div class="incident-desc">
-              ${e.desyncType === DesyncType.EarlyTap ? `Tapped ${Math.abs(e.timeOffset).toFixed(0)}ms early (cursor was ${e.distanceToCenter.toFixed(1)}px from center)` :
-              e.desyncType === DesyncType.LateTap ? `Tapped ${e.timeOffset.toFixed(0)}ms late (cursor left circle)` :
-              e.desyncType === DesyncType.SpeedMiss ? `Cursor moved past circle (tap was ${e.timeOffset > 0 ? '+' : ''}${e.timeOffset.toFixed(0)}ms, Δ ${e.distanceToCenter.toFixed(1)}px)` :
-                e.desyncType === DesyncType.TrueAimMiss ? `Cursor missed circle by ${e.distanceToCenter.toFixed(1)}px (no tap in window)` :
-                  e.desyncType === DesyncType.MisaimInWindow ? `Cursor missed circle by ${e.distanceToCenter.toFixed(1)}px during tap` :
-                    `Hit offset: ${e.timeOffset > 0 ? '+' : ''}${e.timeOffset.toFixed(1)}ms | Distance: ${e.distanceToCenter.toFixed(1)}px (${e.marginUsagePercent.toFixed(0)}% margin)`}
-            </div>
+            <span class="flag ${flagClass}"></span>
+            <span class="incident-time">${mins}:${secs.padStart(5, '0')}</span>
+            <span class="incident-object">#${e.objectIndex}</span>
+            <span class="incident-what">${whatText}</span>
+            <span class="incident-desc" title="${noteText}">${noteText}</span>
             <button class="btn-seek"><svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 20 12 6 20 6 4"></polygon></svg>Seek</button>
           `;
           item.querySelector('.btn-seek')?.addEventListener('click', () => {
