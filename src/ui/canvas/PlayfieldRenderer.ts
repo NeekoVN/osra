@@ -672,12 +672,17 @@ export class PlayfieldRenderer {
     showApproachCircle: boolean = true
   ): void {
     if (timeDiff <= 0) {
+      // In osu!, hit animations (hit explosion / miss fade) are not played when Hidden mod is active
+      if (this.isHD) {
+        return;
+      }
+
       // Scale elapsed time by playbackRate so hit animations play at original real-time visual speed
       const visualElapsed = (-timeDiff) / this.playbackRate;
 
       if (isMiss) {
         // On miss: circle fades out over 100ms
-        if (!this.isHD && visualElapsed <= 100) {
+        if (visualElapsed <= 100) {
           const missAlpha = Math.max(0, 1.0 - visualElapsed / 100);
           ctx.save();
           ctx.globalAlpha = missAlpha * 0.35;
@@ -694,11 +699,11 @@ export class PlayfieldRenderer {
         return;
       }
 
-      // Hit: render hit explosion with full opacity (not muted by HD fade)
+      // Hit: render hit explosion
       this.renderHitExplosion(ctx, x, y, R, comboColor, visualElapsed, 1.0);
 
       // In osu!, combo number / flash fades out within 40ms of the hit
-      if (visualElapsed < 40 && (!this.isHD || baseAlpha > 0.05)) {
+      if (visualElapsed < 40) {
         ctx.save();
         const numAlpha = Math.max(0, 1.0 - (visualElapsed / 40));
         ctx.globalAlpha = numAlpha;
@@ -783,7 +788,7 @@ export class PlayfieldRenderer {
     elapsed: number,
     baseAlpha: number = 1.0
   ): void {
-    if (elapsed < 0 || elapsed > 240) return;
+    if (this.isHD || elapsed < 0 || elapsed > 240) return;
     const progress = elapsed / 240;
     const easeOut = 1.0 - Math.pow(1.0 - progress, 2);
     const scale = 1.0 + 0.45 * easeOut;
