@@ -5,6 +5,7 @@ import {
 import { Beatmap, HitObject } from '../types/beatmap.ts';
 import { parseOsuBeatmap } from '../binary/OsuParser.ts';
 import { ensureRosuInitialized, LazerDifficultyAttributes } from './LazerDifficulty.ts';
+import { getGameplayRate } from './HitWindows.ts';
 
 export interface RollingDifficultyPoint {
   /** Timestamp in milliseconds for this window center */
@@ -34,8 +35,14 @@ export interface RollingDifficultyOptions {
   windowDurationMs?: number;
   /** Whether to evaluate with osu!lazer ruleset (default: true) */
   lazer?: boolean;
-  /** Whether to normalize rolling peak difficulty to the full map star rating (default: true) */
-  normalizeToFullMap?: boolean;
+  /**
+   * Whether to compensate for finite-window geometric strain decay truncation (default: true).
+   * Scales slice difficulties by the steady-state infinite series factor 1 / (1 - 0.9^K),
+   * where K is the number of 400ms sections in the window. This allows genuine local
+   * difficulty spikes to be evaluated at their true physical intensity without being
+   * compressed by full-map averaging.
+   */
+  steadyStateCompensation?: boolean;
 }
 
 export interface RollingDifficultyResult {
@@ -84,7 +91,7 @@ function upperBound(objects: HitObject[], targetTime: number): number {
 /**
  * Reconstructs a minimal .osu string for a sub-slice of hit objects.
  */
-function buildSliceOsuContent(beatmap: Beatmap, sliceObjects: HitObject[]): string {
+export function buildSliceOsuContent(beatmap: Beatmap, sliceObjects: HitObject[]): string {
   const b = beatmap;
   let out = `osu file format v${b.formatVersion || 14}\n\n`;
   out += '[General]\nMode: 0\n\n';
@@ -121,6 +128,43 @@ function buildSliceOsuContent(beatmap: Beatmap, sliceObjects: HitObject[]): stri
 }
 
 /**
+ * Combines difficulty skill components into an overall Star Rating.
+ * Implements osu!lazer ruleset's performance combination formula:
+ * StarRating = ((BaseAim^1.1 + BaseSpeed^1.1 + BaseCognition^1.1)^(1 / 1.1) * 1.12)^(1 / 3).
+ */
+export function combineStarRating(
+  aim: number,
+  speed: number,
+  reading: number = 0,
+  flashlight: number = 0
+): number {
+  const baseAimPerf = 4.0 * Math.pow(Math.max(0, aim), 3);
+  const baseSpeedPerf = 4.0 * Math.pow(Math.max(0, speed), 3);
+  const baseReadingPerf = 4.0 * Math.pow(Math.max(0, reading), 3);
+  const baseFlashlightPerf = 25.0 * Math.pow(Math.max(0, flashlight), 2);
+
+  let baseCognitionPerf = 0;
+  if (baseReadingPerf <= 0) {
+    baseCognitionPerf = baseFlashlightPerf;
+  } else if (baseFlashlightPerf <= 0) {
+    baseCognitionPerf = baseReadingPerf;
+  } else {
+    const flRatio = Math.min(1.0, Math.max(0.25, baseFlashlightPerf / baseReadingPerf));
+    baseCognitionPerf = Math.pow(
+      Math.pow(baseReadingPerf, 1.1) + Math.pow(baseFlashlightPerf * flRatio, 1.1),
+      1 / 1.1
+    );
+  }
+
+  const basePerf = Math.pow(
+    Math.pow(baseAimPerf, 1.1) + Math.pow(baseSpeedPerf, 1.1) + Math.pow(baseCognitionPerf, 1.1),
+    1 / 1.1
+  );
+
+  return Math.cbrt(basePerf * 1.12);
+}
+
+/**
  * Computes a continuous rolling difficulty timeline across a beatmap.
  * Uses a fixed 400ms sampling grid and a localized sliding window
  * evaluated directly through the rosu-pp WebAssembly engine.
@@ -151,8 +195,9 @@ export async function calculateRollingDifficulty(
   const halfWindow = windowDurationMs / 2;
   const mods = options.mods ?? 0;
   const clockRate = options.clockRate ?? null;
+  const effectiveRate = clockRate ?? getGameplayRate(mods);
   const lazer = options.lazer ?? true;
-  const normalizeToFullMap = options.normalizeToFullMap ?? true;
+  const steadyStateCompensation = options.steadyStateCompensation ?? true;
 
   const firstTime = objects[0].time;
   const lastTime = objects[objects.length - 1].time;
@@ -167,32 +212,30 @@ export async function calculateRollingDifficulty(
   });
 
   let overallAttributes: LazerDifficultyAttributes | undefined;
-  if (normalizeToFullMap) {
+  try {
+    const fullContent = beatmap.rawContent || buildSliceOsuContent(beatmap, objects);
+    const fullRosuMap = new RosuBeatmap(fullContent);
     try {
-      const fullContent = beatmap.rawContent || buildSliceOsuContent(beatmap, objects);
-      const fullRosuMap = new RosuBeatmap(fullContent);
-      try {
-        const rawFullAttrs = diffCalc.calculate(fullRosuMap);
-        overallAttributes = {
-          starRating: Math.round(rawFullAttrs.stars * 100) / 100,
-          maxCombo: rawFullAttrs.maxCombo,
-          aimDifficulty: rawFullAttrs.aim ?? 0,
-          speedDifficulty: rawFullAttrs.speed ?? 0,
-          flashlightDifficulty: rawFullAttrs.flashlight ?? 0,
-          sliderFactor: rawFullAttrs.sliderFactor ?? 1,
-          speedNoteCount: rawFullAttrs.speedNoteCount,
-          aimDifficultStrainCount: rawFullAttrs.aimDifficultStrainCount,
-          speedDifficultStrainCount: rawFullAttrs.speedDifficultStrainCount,
-          readingDifficulty: (rawFullAttrs as unknown as { readingDifficulty?: number }).readingDifficulty ?? 0,
-          readingDifficultNoteCount: (rawFullAttrs as unknown as { readingDifficultNoteCount?: number }).readingDifficultNoteCount ?? 0,
-          rawAttributes: rawFullAttrs
-        };
-      } finally {
-        fullRosuMap.free();
-      }
-    } catch (err) {
-      console.warn('Could not compute full map attributes for rolling difficulty normalization:', err);
+      const rawFullAttrs = diffCalc.calculate(fullRosuMap);
+      overallAttributes = {
+        starRating: Math.round(rawFullAttrs.stars * 100) / 100,
+        maxCombo: rawFullAttrs.maxCombo,
+        aimDifficulty: rawFullAttrs.aim ?? 0,
+        speedDifficulty: rawFullAttrs.speed ?? 0,
+        flashlightDifficulty: rawFullAttrs.flashlight ?? 0,
+        sliderFactor: rawFullAttrs.sliderFactor ?? 1,
+        speedNoteCount: rawFullAttrs.speedNoteCount,
+        aimDifficultStrainCount: rawFullAttrs.aimDifficultStrainCount,
+        speedDifficultStrainCount: rawFullAttrs.speedDifficultStrainCount,
+        readingDifficulty: (rawFullAttrs as unknown as { readingDifficulty?: number }).readingDifficulty ?? 0,
+        readingDifficultNoteCount: (rawFullAttrs as unknown as { readingDifficultNoteCount?: number }).readingDifficultNoteCount ?? 0,
+        rawAttributes: rawFullAttrs
+      };
+    } finally {
+      fullRosuMap.free();
     }
+  } catch (err) {
+    console.warn('Could not compute full map attributes for rolling difficulty:', err);
   }
 
   const points: RollingDifficultyPoint[] = [];
@@ -244,23 +287,40 @@ export async function calculateRollingDifficulty(
 
   diffCalc.free();
 
-  let rawMaxStarRating = 0;
-  for (const pt of points) {
-    if (pt.starRating > rawMaxStarRating) {
-      rawMaxStarRating = pt.starRating;
-    }
-  }
+  // Steady-state infinite series compensation with power-law skill scaling.
+  // osu!'s strain accumulation uses a geometric series with decay r = 0.9 per 400ms section.
+  // In steady state (infinite map), sum_{k=0}^inf 0.9^k = 1 / (1 - 0.9) = 10.0.
+  // In a localized window of duration W ms, the effective time in gameplay space is
+  // W_gameplay = W / effectiveRate, giving K = W_gameplay / 400 sections where
+  // sum_{k=0}^{K-1} 0.9^k = 10.0 * (1 - 0.9^K).
+  //
+  // Crucially, this decay ratio mStrain = 1 / (1 - 0.9^K) scales physical STRAIN, NOT Star Rating.
+  // In osu!, Star Rating is non-linear in strain:
+  // - Speed rating = sqrt(strain) * 0.0675 (exponent 0.50)
+  // - Aim rating = strain^0.63 * 0.02275 (exponent 0.63)
+  // - Reading / Flashlight = sqrt(strain) (exponent 0.50)
+  //
+  // Additionally, rosu-pp applies a 4000ms top-strain logarithmic reduction (0.727 factor)
+  // that affects 100% of a 4-second sub-slice. Correcting by 1.15 neutralizes this localized penalty.
+  if (steadyStateCompensation) {
+    const gameplayWindowMs = windowDurationMs / Math.max(0.1, effectiveRate);
+    const kSections = Math.max(1, gameplayWindowMs / 400);
+    const mStrain = 1 / (1 - Math.pow(0.9, kSections));
 
-  // Calibrate rolling difficulty against full-map star rating to counteract sub-map
-  // geometric decay series truncation (1/(1-0.9)=10.0 vs slice ~6.5) and short-map length penalties.
-  if (normalizeToFullMap && overallAttributes && rawMaxStarRating > 0 && overallAttributes.starRating > 0) {
-    const scaleFactor = overallAttributes.starRating / rawMaxStarRating;
+    const slicePenaltyCorrection = 1.15;
+    const multAim = Math.pow(mStrain, 0.63) * slicePenaltyCorrection;
+    const multSpeed = Math.pow(mStrain, 0.50) * slicePenaltyCorrection;
+    const multReading = Math.pow(mStrain, 0.50) * slicePenaltyCorrection;
+    const multFlashlight = Math.pow(mStrain, 0.50) * slicePenaltyCorrection;
+
     for (const pt of points) {
-      pt.starRating = Math.round(pt.starRating * scaleFactor * 100) / 100;
-      pt.aim = Math.round(pt.aim * scaleFactor * 100) / 100;
-      pt.speed = Math.round(pt.speed * scaleFactor * 100) / 100;
-      pt.reading = Math.round(pt.reading * scaleFactor * 100) / 100;
-      pt.flashlight = Math.round(pt.flashlight * scaleFactor * 100) / 100;
+      if (pt.starRating > 0) {
+        pt.aim = Math.round(pt.aim * multAim * 100) / 100;
+        pt.speed = Math.round(pt.speed * multSpeed * 100) / 100;
+        pt.reading = Math.round(pt.reading * multReading * 100) / 100;
+        pt.flashlight = Math.round(pt.flashlight * multFlashlight * 100) / 100;
+        pt.starRating = Math.round(combineStarRating(pt.aim, pt.speed, pt.reading, pt.flashlight) * 100) / 100;
+      }
     }
   }
 

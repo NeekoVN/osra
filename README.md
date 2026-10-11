@@ -59,7 +59,7 @@ and lazer-correct difficulty/performance calculation powered by Rust compiled to
 - **Beat-based rolling accuracy.** Rolling accuracy (`1/2/4/8` beats and note windows) that follows
   the tempo changes of the map rather than fixed note counts.
 - **Continuous rolling difficulty timeline.** Local sliding-window difficulty calculation across the map
-  (400 ms sampling grid calibrated against full-map star rating), visualizing real-time Star Rating,
+  (400 ms sampling grid with steady-state series compensation), visualizing real-time Star Rating,
   Aim, Speed, and Reading difficulty curves.
 - **Cursor kinematics & strain overlay.** Velocity (`px/ms`), acceleration (`px/ms²`), turn-sharpness
   angles with snap-aim apex markers, overlaid on lazer aim/speed strain curves.
