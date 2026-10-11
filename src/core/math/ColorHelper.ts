@@ -23,3 +23,9 @@ export function getDiffTextColor(rating: number) {
   if (rating < 9) return '#F6F05C';
   return difficultyTextColorSpectrum(rating);
 }
+
+export function getDifficultyStrokeColor(rating: number) {
+  if (rating <= 0.05) return 'rgba(255, 255, 255, 0.2)';
+  if (rating < 6.5) return '#FFFFFF';
+  return getDiffTextColor(rating);
+}

@@ -918,7 +918,7 @@ async function performEvaluation(): Promise<void> {
   playfieldRenderer?.setBackground(currentBackgroundBlobUrl);
   playfieldRenderer?.setData(moddedBeatmap, currentReplay, currentEval.hitEvents, currentBackgroundBlobUrl);
   scatterRenderer?.setData(currentEval.hitEvents);
-  telemetryCharts?.setData(currentEval, moddedBeatmap);
+  await telemetryCharts?.setData(currentEval, moddedBeatmap, currentReplay.mods, gameplayRate);
   incidentsDrawer?.setData(currentEval.hitEvents, currentEval.fingerLockEvents, currentEval.tapPatterns);
   playbackControls?.setIncidents(currentEval.hitEvents);
   playbackControls?.setSkipInfo(firstTime, currentReplay.skipGaps || []);

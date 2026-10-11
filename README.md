@@ -32,8 +32,8 @@ and lazer-correct difficulty/performance calculation powered by Rust compiled to
 | Main analysis workspace | Beatmap ingestion |
 | ![Hit error timeline](assets/screenshots/hiterror.png) | ![Hit scatter heatmap](assets/screenshots/hitscatter.png) |
 | Hit error & timing windows timeline | Hit scatter heatmap (absolute + jump-aligned) |
-| ![Telemetry charts](assets/screenshots/telemetry.png) | |
-| Synchronized multi-channel telemetry | |
+| ![Telemetry charts](assets/screenshots/telemetry.png) | ![Rolling difficulty graph](assets/screenshots/srgraph.png) |
+| Synchronized multi-channel telemetry | Rolling difficulty graph |
 
 ---
 
@@ -58,6 +58,9 @@ and lazer-correct difficulty/performance calculation powered by Rust compiled to
   individual and combined stream BPM plotted against the map's native tempo.
 - **Beat-based rolling accuracy.** Rolling accuracy (`1/2/4/8` beats and note windows) that follows
   the tempo changes of the map rather than fixed note counts.
+- **Continuous rolling difficulty timeline.** Local sliding-window difficulty calculation across the map
+  (400 ms sampling grid with steady-state series compensation), visualizing real-time Star Rating,
+  Aim, Speed, and Reading difficulty curves.
 - **Cursor kinematics & strain overlay.** Velocity (`px/ms`), acceleration (`px/ms²`), turn-sharpness
   angles with snap-aim apex markers, overlaid on lazer aim/speed strain curves.
 - **Lazer difficulty & performance.** Star rating and live per-note performance using a
@@ -73,7 +76,7 @@ flowchart TD
     OSU[".osu / .osz beatmap"] --> BIN
     BIN --> DATA["Replay frames + hit objects + timing points + mods"]
     DATA --> METRICS["ReplayEvaluator - hit matching, UR, desync, kinematics<br/>Projections - hit scatter, jump-aligned, regional drifts<br/>TapPatternClassifier - finger locks, stream BPM<br/>RollingAccuracy - beat/note sliding accuracy"]
-    DATA --> ROSU["rosu-pp WASM - star rating, aim/speed/reading, gradual per-note PP"]
+    DATA --> ROSU["rosu-pp WASM - star rating, aim/speed/reading, rolling difficulty, gradual PP"]
     METRICS --> RENDER["TimeBus playback clock"]
     ROSU --> RENDER
     RENDER --> PLAYFIELD["Canvas playfield + hit scatter heatmap"]
@@ -93,8 +96,9 @@ flowchart TD
 4. **Metrics.** The matched events feed discrete and time-series engines, all written into flat
    `Float64Array`/`Float32Array`/`Uint8Array` buffers sized for chart-render batching.
 5. **Difficulty & performance.** A pre-built `rosu-pp` WASM bundle computes lazer star rating,
-   aim/speed/reading difficulty, and a per-note `GradualPerformance` stepper that reproduces the
-   in-game live PP HUD. A pure-TypeScript fallback keeps the app usable without WebAssembly.
+   aim/speed/reading difficulty, a continuous rolling difficulty timeline across the beatmap,
+   and a per-note `GradualPerformance` stepper that reproduces the in-game live PP HUD.
+   A pure-TypeScript fallback keeps the app usable without WebAssembly.
 6. **Rendering.** A single `TimeBus` clock synchronizes HTML5 audio, the Canvas 2D playfield, the
    hit scatter heatmap, and up to five uPlot channels with crosshair sync and scrubbing during
    playback.
@@ -195,8 +199,8 @@ osra/
 │   │   ├── binary/             # BinaryStream, .osr, .osu, .osz parsers, md5
 │   │   ├── evaluator/          # ReplayEvaluator, TapPatternClassifier
 │   │   ├── math/               # HitWindows, UnstableRate, DesyncClassifier,
-│   │   │                       # Projections, RollingAccuracy, Kinematics,
-│   │   │                       # LazerDifficulty, PerformancePoints
+│   │   │                       # Projections, RollingAccuracy, RollingDifficulty,
+│   │   │                       # Kinematics, LazerDifficulty, PerformancePoints, ColorHelper
 │   │   ├── api/                # MirrorClient (beatmap auto-fetch)
 │   │   └── types/              # beatmap, replay, telemetry types
 │   ├── ui/                     # TimeBus, canvas renderers, uPlot charts, components

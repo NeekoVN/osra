@@ -5,6 +5,12 @@ import { Beatmap } from '../../core/types/beatmap.ts';
 import { HitJudgement, DesyncType } from '../../core/types/telemetry.ts';
 import { TimeBus } from '../TimeBus.ts';
 import { TapPatternClassifier } from '../../core/evaluator/TapPatternClassifier.ts';
+import { getDiffColor, getDiffTextColor, getDifficultyStrokeColor } from '../../core/math/ColorHelper.ts';
+import {
+  calculateRollingDifficulty,
+  getDifficultyAtTime,
+  RollingDifficultyResult
+} from '../../core/math/RollingDifficulty.ts';
 
 const CHART_ICONS = {
   zoomIn: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line><line x1="11" y1="8" x2="11" y2="14"></line><line x1="8" y1="11" x2="14" y2="11"></line></svg>`,
@@ -56,6 +62,13 @@ export class TelemetryCharts {
   private k1CumulativeTaps: Uint32Array | null = null;
   private k2CumulativeTaps: Uint32Array | null = null;
   private firstRowEl: HTMLElement | null = null;
+  private rollingResult: RollingDifficultyResult | null = null;
+  private diffChipEl: HTMLElement | null = null;
+  private diffChipStarEl: HTMLElement | null = null;
+  private diffChipValEl: HTMLElement | null = null;
+  private diffAimValEl: HTMLElement | null = null;
+  private diffSpeedValEl: HTMLElement | null = null;
+  private diffReadingValEl: HTMLElement | null = null;
 
   constructor(container: HTMLElement, timeBus: TimeBus) {
     this.container = container;
@@ -105,15 +118,40 @@ export class TelemetryCharts {
     this.k1CumulativeTaps = null;
     this.k2CumulativeTaps = null;
     this.firstRowEl = null;
+    this.rollingResult = null;
+    this.diffChipEl = null;
+    this.diffChipStarEl = null;
+    this.diffChipValEl = null;
+    this.diffAimValEl = null;
+    this.diffSpeedValEl = null;
+    this.diffReadingValEl = null;
     this.scrollWindowMs = 8000;
     this.followScrubber = false;
     this.btnLock = null;
   }
 
-  public setData(evalResult: EvaluationResult, beatmap?: Beatmap): void {
+  public async setData(
+    evalResult: EvaluationResult,
+    beatmap?: Beatmap,
+    mods: number = 0,
+    clockRate: number = 1.0
+  ): Promise<void> {
     this.destroy();
     this.evalResult = evalResult;
     this.container.innerHTML = '';
+
+    if (beatmap) {
+      try {
+        this.rollingResult = await calculateRollingDifficulty(beatmap, {
+          mods,
+          clockRate,
+          stepMs: 400,
+          windowDurationMs: 4000
+        });
+      } catch (err) {
+        console.warn('Failed to calculate rolling difficulty:', err);
+      }
+    }
 
     const getAvailableWidth = () => Math.max(300, (this.container.clientWidth || 1200) - 58);
     const width = getAvailableWidth();
@@ -162,7 +200,7 @@ export class TelemetryCharts {
     // -------------------------------------------------------------
     const ch1Row = this.createChannelContainer(
       'Hit Error',
-      'OD Window Bands: 300 (Blue) • 100 (Green) • 50 (Yellow) • <span style="color:#FF6666;">― Miss</span> • <span style="color:#B87BFF;">― Desync</span> • <span style="color:#8B5CF6;">▮ Stream</span> • <span style="color:#F43F5E;">▮ Deathstream</span> • <span style="color:#FFFFFF;">― Rolling Mean</span>',
+      '<span style="color:#FF6666;">― Miss</span> • <span style="color:#B87BFF;">― Desync</span> • <span style="color:#8B5CF6;">▮ Stream</span> • <span style="color:#F43F5E;">▮ Deathstream</span> • <span style="color:#FFFFFF;">― Rolling Mean</span>',
       'ch1'
     );
     this.firstRowEl = ch1Row.wrap;
@@ -459,6 +497,269 @@ export class TelemetryCharts {
         this.toggleChannelExpand(ch1Row.wrap, ch1Chart, 100, 260);
         this.notifyExpandStateChange();
       };
+    }
+
+    // Helpers for dynamic Star Rating scale line spacing and grid calculation
+    const computeDifficultyYMax = (peakSR: number): number => {
+      const target = Math.max(4.0, peakSR * 1.12);
+      if (target > 16) {
+        return Math.ceil(target / 4) * 4;
+      } else if (target > 10) {
+        return Math.ceil(target / 2) * 2;
+      } else if (target > 6) {
+        return Math.ceil(target / 2) * 2;
+      } else {
+        return Math.ceil(target);
+      }
+    };
+
+    const getDifficultyStep = (maxVal: number, plotHeight: number): number => {
+      if (plotHeight < 120) {
+        // Compact mode (85px total height, plot height ~60-65px)
+        if (maxVal > 16) return 5;
+        if (maxVal > 10) return 4;
+        if (maxVal > 5) return 2;
+        return 1;
+      } else {
+        // Expanded mode (240px total height, plot height ~215px)
+        if (maxVal > 24) return 5;
+        if (maxVal > 16) return 4;
+        return 2;
+      }
+    };
+
+    // -------------------------------------------------------------
+    // Channel: Rolling Difficulty (Directly below Hit Error)
+    // -------------------------------------------------------------
+    let diffRowWrap: HTMLElement | null = null;
+    if (this.rollingResult && this.rollingResult.points.length > 0) {
+      const rollingResult = this.rollingResult;
+      const peakSR = rollingResult.maxStarRating || 5.0;
+      const meanSR = rollingResult.averageStarRating || 0.0;
+      const yMax = computeDifficultyYMax(peakSR);
+
+      const diffRow = this.createChannelContainer(
+        'Difficulty',
+        '',
+        'ch-diff'
+      );
+      diffRowWrap = diffRow.wrap;
+
+      // Create persistent live Difficulty HUD with 200ms color transition chip
+      const diffHud = document.createElement('div');
+      diffHud.className = 'diff-header-hud';
+      diffHud.style.display = 'inline-flex';
+      diffHud.style.alignItems = 'center';
+      diffHud.style.gap = '8px';
+
+      diffHud.innerHTML = `
+        <span class="sr-pill diff-sr-chip" id="diff-live-sr-chip">
+          <i id="diff-live-sr-star" class="sr-star fa-solid fa-star"></i>
+          <span id="diff-live-sr-val">0.00</span>
+        </span>
+        <span class="telemetry-subtitle" id="diff-live-stats" style="margin-left: 2px;">
+          Aim <span id="diff-live-aim" style="color:#FF8068;font-weight:600;">0.00</span>
+          &nbsp;•&nbsp; Spd <span id="diff-live-speed" style="color:#4FFFD5;font-weight:600;">0.00</span>
+          &nbsp;•&nbsp; Read <span id="diff-live-reading" style="color:#C645B8;font-weight:600;">0.00</span>
+          &nbsp;•&nbsp; Peak <span style="color:#FFFFFF;font-weight:600;">${peakSR.toFixed(2)}★</span>
+          &nbsp;•&nbsp; Mean <span style="color:#A68E99;">${meanSR.toFixed(2)}★</span>
+        </span>
+      `;
+
+      const oldSubtitle = diffRow.headerLeft.querySelector('.telemetry-subtitle');
+      if (oldSubtitle) oldSubtitle.remove();
+      diffRow.headerLeft.appendChild(diffHud);
+
+      this.diffChipEl = diffHud.querySelector('#diff-live-sr-chip');
+      this.diffChipStarEl = diffHud.querySelector('#diff-live-sr-star');
+      this.diffChipValEl = diffHud.querySelector('#diff-live-sr-val');
+      this.diffAimValEl = diffHud.querySelector('#diff-live-aim');
+      this.diffSpeedValEl = diffHud.querySelector('#diff-live-speed');
+      this.diffReadingValEl = diffHud.querySelector('#diff-live-reading');
+
+      const diffTimes = rollingResult.points.map(p => p.timeMs);
+      const diffStars = rollingResult.points.map(p => p.starRating);
+
+      // Pad boundary times if needed to match timeline range
+      if (diffTimes[0] > this.minTime) {
+        diffTimes.unshift(this.minTime);
+        diffStars.unshift(0);
+      }
+      if (diffTimes[diffTimes.length - 1] < this.maxTime) {
+        diffTimes.push(this.maxTime);
+        diffStars.push(0);
+      }
+
+      const diffData: uPlot.AlignedData = [
+        new Float64Array(diffTimes),
+        new Float64Array(diffStars)
+      ];
+
+      const diffChart = new uPlot(
+        {
+          width,
+          height: 85,
+          legend: { show: false },
+          cursor: { sync: { key: sync.key, setSeries: true } },
+          scales: {
+            x: { time: false, min: this.minTime, max: this.maxTime },
+            y: { range: [0, yMax] }
+          },
+          axes: [
+            { show: false },
+            {
+              stroke: '#A68E99',
+              label: '★ Stars',
+              size: 50,
+              grid: { show: false },
+              splits: (u: uPlot) => {
+                const h = u.bbox.height;
+                const max = u.scales.y.max ?? yMax;
+                const step = getDifficultyStep(max, h);
+                const splits: number[] = [];
+                for (let s = 0; s <= max + 0.001; s += step) {
+                  splits.push(s);
+                }
+                return splits;
+              },
+              values: (_u, vals) => vals.map(v => `${v}★`)
+            }
+          ],
+          series: [
+            {},
+            {
+              label: 'Rolling Difficulty',
+              stroke: 'transparent',
+              fill: 'transparent',
+              points: { show: false }
+            }
+          ],
+          hooks: {
+            drawClear: [
+              (u) => {
+                const left = u.bbox.left;
+                const top = u.bbox.top;
+                const w = u.bbox.width;
+                const h = u.bbox.height;
+                const yBottom = u.valToPos(0, 'y', true);
+                const yTop = u.valToPos(yMax, 'y', true);
+
+                u.ctx.save();
+                // 1. Rounded corner clip for chart area (specs: rounded corners)
+                u.ctx.beginPath();
+                u.ctx.roundRect(left, top, w, h, 8);
+                u.ctx.clip();
+
+                // 2. Official Difficulty Gradient (vertical: 0★ at bottom to yMax at top)
+                const vertGrad = u.ctx.createLinearGradient(0, yBottom, 0, yTop);
+                const gradientSteps = 30;
+                for (let s = 0; s <= gradientSteps; s++) {
+                  const ratio = s / gradientSteps;
+                  const rating = ratio * yMax;
+                  vertGrad.addColorStop(ratio, getDiffColor(rating));
+                }
+
+                // 3. Low-opacity gradient background (gray at bottom, black top)
+                u.ctx.globalAlpha = 0.16;
+                u.ctx.fillStyle = vertGrad;
+                u.ctx.fillRect(left, top, w, h);
+
+                // 4. Subtle star threshold guidelines synchronized with axis step
+                const step = getDifficultyStep(yMax, h);
+                u.ctx.lineWidth = 1;
+                for (let s = step; s < yMax; s += step) {
+                  const sy = u.valToPos(s, 'y', true);
+                  if (sy >= top && sy <= yBottom) {
+                    u.ctx.globalAlpha = 0.08;
+                    u.ctx.strokeStyle = '#FFFFFF';
+                    u.ctx.beginPath();
+                    u.ctx.moveTo(left, sy);
+                    u.ctx.lineTo(left + w, sy);
+                    u.ctx.stroke();
+                  }
+                }
+
+                // 5. Map data points to screen coordinates
+                const rawPoints = rollingResult.points;
+                const screenPts: { x: number; y: number; rating: number }[] = [];
+                for (let i = 0; i < rawPoints.length; i++) {
+                  const pt = rawPoints[i];
+                  const px = u.valToPos(pt.timeMs, 'x', true);
+                  const py = u.valToPos(pt.starRating, 'y', true);
+                  screenPts.push({ x: px, y: py, rating: pt.starRating });
+                }
+
+                if (screenPts.length >= 2) {
+                  // 6. Chart fill itself in full opacity, masked per calculated rolling difficulty
+                  u.ctx.save();
+                  u.ctx.beginPath();
+                  u.ctx.moveTo(screenPts[0].x, yBottom);
+                  u.ctx.lineTo(screenPts[0].x, screenPts[0].y);
+                  this.traceMonotoneSpline(u.ctx, screenPts);
+                  u.ctx.lineTo(screenPts[screenPts.length - 1].x, yBottom);
+                  u.ctx.closePath();
+                  u.ctx.clip();
+
+                  u.ctx.globalAlpha = 0.88;
+                  u.ctx.fillStyle = vertGrad;
+                  u.ctx.fillRect(left, top, w, h);
+                  u.ctx.restore();
+
+                  // 7. Thin line to add contrast (white if < 6.5*, mirroring ColorHelper if >= 6.5*)
+                  u.ctx.save();
+                  u.ctx.beginPath();
+                  u.ctx.moveTo(screenPts[0].x, screenPts[0].y);
+                  this.traceMonotoneSpline(u.ctx, screenPts);
+
+                  const strokeGrad = u.ctx.createLinearGradient(left, 0, left + w, 0);
+                  let lastStop = 0;
+                  const firstColor = getDifficultyStrokeColor(screenPts[0].rating);
+                  strokeGrad.addColorStop(0, firstColor);
+
+                  for (let i = 0; i < screenPts.length; i++) {
+                    const stop = Math.max(0, Math.min(1, (screenPts[i].x - left) / w));
+                    if (stop >= lastStop) {
+                      strokeGrad.addColorStop(stop, getDifficultyStrokeColor(screenPts[i].rating));
+                      lastStop = stop;
+                    }
+                  }
+                  if (lastStop < 1) {
+                    strokeGrad.addColorStop(1, getDifficultyStrokeColor(screenPts[screenPts.length - 1].rating));
+                  }
+
+                  u.ctx.globalAlpha = 1.0;
+                  u.ctx.strokeStyle = strokeGrad;
+                  u.ctx.lineWidth = 3;
+                  u.ctx.stroke();
+                  u.ctx.restore();
+                }
+
+                u.ctx.restore(); // restores rounded clip
+              }
+            ]
+          }
+        },
+        diffData,
+        diffRow.chartBody
+      );
+
+      this.charts.push(diffChart);
+      this.channels.push({
+        wrap: diffRow.wrap,
+        chart: diffChart,
+        defaultHeight: 85,
+        expandedHeight: 240
+      });
+
+      if (diffRow.expandBtn) {
+        diffRow.expandBtn.onclick = (e) => {
+          e.stopPropagation();
+          this.toggleChannelExpand(diffRow.wrap, diffChart, 85, 240);
+          this.notifyExpandStateChange();
+        };
+      }
+
+      this.updateDifficultyHud(this.minTime);
     }
 
     // -------------------------------------------------------------
@@ -1103,7 +1404,11 @@ export class TelemetryCharts {
     this.resizeObserver.observe(this.container);
 
     // Setup Interactive Zoom, Pan, and Click-Seek Handlers
-    this.setupInteractivity(ch1Row.wrap, ch2Row.wrap, ch3Row.wrap, ch4Row.wrap, ch5Row.wrap);
+    const interactiveRows = [ch1Row.wrap, ch2Row.wrap, ch3Row.wrap, ch4Row.wrap, ch5Row.wrap];
+    if (diffRowWrap) {
+      interactiveRows.push(diffRowWrap);
+    }
+    this.setupInteractivity(...interactiveRows);
   }
 
   private renderToolbar(): void {
@@ -1375,6 +1680,8 @@ export class TelemetryCharts {
   private updatePlayhead(currentTimeMs: number): void {
     if (!this.playheadEl || !this.playheadBadge || this.charts.length === 0) return;
 
+    this.updateDifficultyHud(currentTimeMs);
+
     if (this.firstRowEl && (!this.playheadEl.style.top || this.playheadEl.style.top === '')) {
       this.playheadEl.style.top = `${this.firstRowEl.offsetTop}px`;
     }
@@ -1518,4 +1825,74 @@ export class TelemetryCharts {
       this.onExpandStateChange(this.areAllExpanded());
     }
   }
+
+  private updateDifficultyHud(currentTimeMs: number): void {
+    if (!this.rollingResult || !this.diffChipValEl) return;
+    const cur = getDifficultyAtTime(this.rollingResult, currentTimeMs);
+    if (!cur) return;
+
+    const starBg = getDiffColor(cur.starRating);
+    const starText = getDiffTextColor(cur.starRating);
+
+    if (this.diffChipEl) {
+      this.diffChipEl.style.backgroundColor = starBg;
+      this.diffChipEl.style.color = starText;
+    }
+    if (this.diffChipStarEl) {
+      this.diffChipStarEl.style.color = starText;
+    }
+    this.diffChipValEl.textContent = cur.starRating.toFixed(2);
+
+    if (this.diffAimValEl) this.diffAimValEl.textContent = cur.aim.toFixed(2);
+    if (this.diffSpeedValEl) this.diffSpeedValEl.textContent = cur.speed.toFixed(2);
+    if (this.diffReadingValEl) this.diffReadingValEl.textContent = cur.reading.toFixed(2);
+  }
+
+  private traceMonotoneSpline(
+    ctx: CanvasRenderingContext2D,
+    pts: { x: number; y: number }[]
+  ): void {
+    const n = pts.length;
+    if (n < 2) return;
+    if (n === 2) {
+      ctx.lineTo(pts[1].x, pts[1].y);
+      return;
+    }
+
+    const dx = new Float64Array(n - 1);
+    const dy = new Float64Array(n - 1);
+    const slope = new Float64Array(n - 1);
+
+    for (let i = 0; i < n - 1; i++) {
+      dx[i] = pts[i + 1].x - pts[i].x;
+      dy[i] = pts[i + 1].y - pts[i].y;
+      slope[i] = dx[i] !== 0 ? dy[i] / dx[i] : 0;
+    }
+
+    const m = new Float64Array(n);
+    m[0] = slope[0];
+    m[n - 1] = slope[n - 2];
+
+    for (let i = 1; i < n - 1; i++) {
+      if (slope[i - 1] * slope[i] <= 0) {
+        m[i] = 0;
+      } else {
+        m[i] = (2 * slope[i - 1] * slope[i]) / (slope[i - 1] + slope[i]);
+      }
+    }
+
+    for (let i = 0; i < n - 1; i++) {
+      const p0 = pts[i];
+      const p1 = pts[i + 1];
+      const segDx = dx[i];
+
+      const cp1x = p0.x + segDx / 3;
+      const cp1y = p0.y + (m[i] * segDx) / 3;
+      const cp2x = p1.x - segDx / 3;
+      const cp2y = p1.y - (m[i + 1] * segDx) / 3;
+
+      ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p1.x, p1.y);
+    }
+  }
 }
+
