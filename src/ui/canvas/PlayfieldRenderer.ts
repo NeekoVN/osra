@@ -20,6 +20,7 @@ export class PlayfieldRenderer {
   private backgroundImage: HTMLImageElement | null = null;
   private backgroundLoaded: boolean = false;
   private lastRenderTime: number = 0;
+  private effectiveOD: number = 8.0;
 
   // Mod flags (cached for render loop)
   private isHR: boolean = false;
@@ -177,6 +178,11 @@ export class PlayfieldRenderer {
     let ar = beatmap.difficulty.approachRate;
     if (this.isHR) ar = Math.min(10.0, ar * 1.4);
     else if (mods & OsuMods.Easy) ar = ar * 0.5;
+
+    let od = beatmap.difficulty.overallDifficulty;
+    if (this.isHR) od = Math.min(10.0, od * 1.4);
+    else if (mods & OsuMods.Easy) od = od * 0.5;
+    this.effectiveOD = od;
 
     if (ar < 5) {
       this.rawPreemptMs = 1200 + 600 * (5 - ar) / 5;
@@ -344,88 +350,9 @@ export class PlayfieldRenderer {
       // -------------------------------------------------------------
       // 1. SPINNERS
       // -------------------------------------------------------------
+      // 1. SPINNERS (osu!lazer Argon skin line)
       if (obj.objectType === 'spinner') {
-        const spinnerStart = obj.time;
-        const spinnerEnd = obj.endTime;
-        if (currentTimeMs < spinnerStart - this.preemptMs || currentTimeMs > spinnerEnd + 260) {
-          continue;
-        }
-
-        ctx.save();
-        let alpha = 1.0;
-        if (currentTimeMs < spinnerStart) {
-          alpha = Math.max(0.01, (currentTimeMs - (spinnerStart - this.preemptMs)) / (this.preemptMs * 0.4));
-        } else if (currentTimeMs > spinnerEnd) {
-          alpha = Math.max(0.01, 1.0 - (currentTimeMs - spinnerEnd) / 260);
-        }
-        ctx.globalAlpha = Math.min(1.0, alpha);
-
-        const cx = 256;
-        const cy = 192;
-
-        // Dark outer backdrop disc
-        ctx.fillStyle = 'rgba(12, 14, 19, 0.78)';
-        ctx.beginPath();
-        ctx.arc(cx, cy, 145, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Neon outer perimeter ring
-        ctx.strokeStyle = comboColor;
-        ctx.lineWidth = 2.5;
-        ctx.stroke();
-
-        // Inner decorative ring
-        ctx.strokeStyle = '#282C38';
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.arc(cx, cy, 80, 0, Math.PI * 2);
-        ctx.stroke();
-
-        // Rotating crosshair spokes
-        const spinAngle = (currentTimeMs * 0.006) % (Math.PI * 2);
-        ctx.save();
-        ctx.translate(cx, cy);
-        ctx.rotate(spinAngle);
-        ctx.strokeStyle = comboColor;
-        ctx.lineWidth = 2.0;
-        for (let a = 0; a < 4; a++) {
-          ctx.beginPath();
-          ctx.moveTo(35, 0);
-          ctx.lineTo(135, 0);
-          ctx.stroke();
-          ctx.rotate(Math.PI / 2);
-        }
-        ctx.restore();
-
-        // Approach circle contracting from 180 down to 20 during active spin
-        if (currentTimeMs >= spinnerStart && currentTimeMs <= spinnerEnd) {
-          const progress = (currentTimeMs - spinnerStart) / Math.max(1, spinnerEnd - spinnerStart);
-          const approachR = Math.max(20, 180 * (1.0 - progress));
-          ctx.strokeStyle = '#FFFFFF';
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.arc(cx, cy, approachR, 0, Math.PI * 2);
-          ctx.stroke();
-        }
-
-        // Center hub
-        ctx.fillStyle = '#101217';
-        ctx.beginPath();
-        ctx.arc(cx, cy, 34, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.strokeStyle = '#FFFFFF';
-        ctx.lineWidth = 2.0;
-        ctx.stroke();
-
-        // Spinner state text
-        ctx.fillStyle = '#FFFFFF';
-        ctx.font = 'bold 16px -apple-system, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(currentTimeMs >= spinnerEnd ? 'CLEAR!' : (currentTimeMs >= spinnerStart ? 'SPIN!' : 'SPINNER'), cx, cy);
-
-        ctx.restore();
+        this.renderArgonSpinner(ctx, obj, currentTimeMs, comboColor);
         continue;
       }
 
@@ -439,7 +366,7 @@ export class PlayfieldRenderer {
         const sliderEnd = obj.endTime || (sliderStart + sliderDuration);
         const totalSpans = Math.max(1, obj.repeatCount || 1);
 
-        if (currentTimeMs < sliderStart - this.preemptMs || currentTimeMs > sliderEnd + 100) {
+        if (currentTimeMs < sliderStart - this.preemptMs || currentTimeMs > sliderEnd + 260) {
           continue;
         }
 
@@ -527,11 +454,12 @@ export class PlayfieldRenderer {
         }
 
         // 4. Reverse Arrows (osu! source: reverse arrows are NOT affected by hidden!)
-        if (totalSpans > 1 && currentTimeMs < sliderEnd && rawPoints.length >= 2) {
+        if (totalSpans > 1 && currentTimeMs < sliderEnd + 260 && rawPoints.length >= 2) {
           const progress = currentTimeMs >= sliderStart ? (currentTimeMs - sliderStart) / sliderDuration : 0;
           const currentSpan = Math.floor(progress * totalSpans);
 
-          if (currentSpan < totalSpans - 1) {
+          // Render active unhit reverse arrow
+          if (currentSpan < totalSpans - 1 && currentTimeMs < sliderEnd) {
             const isAtTail = currentSpan % 2 === 0;
             let arrowX: number;
             let arrowY: number;
@@ -539,36 +467,80 @@ export class PlayfieldRenderer {
 
             if (isAtTail) {
               const tailPt = rawPoints[rawPoints.length - 1];
-              const prevPt = rawPoints[Math.max(0, rawPoints.length - 2)];
+              let prevPt = rawPoints[Math.max(0, rawPoints.length - 2)];
+              for (let p = rawPoints.length - 2; p >= 0; p--) {
+                if (Math.hypot(tailPt.x - rawPoints[p].x, tailPt.y - rawPoints[p].y) > 0.1) {
+                  prevPt = rawPoints[p];
+                  break;
+                }
+              }
               arrowX = tailPt.x + stackOffsetX;
               arrowY = tailPt.y + stackOffsetY;
               tangentAngle = Math.atan2(tailPt.y - prevPt.y, tailPt.x - prevPt.x);
             } else {
               const headPt = rawPoints[0];
-              const nextPt = rawPoints[Math.min(rawPoints.length - 1, 1)];
+              let nextPt = rawPoints[Math.min(rawPoints.length - 1, 1)];
+              for (let p = 1; p < rawPoints.length; p++) {
+                if (Math.hypot(headPt.x - rawPoints[p].x, headPt.y - rawPoints[p].y) > 0.1) {
+                  nextPt = rawPoints[p];
+                  break;
+                }
+              }
               arrowX = headPt.x + stackOffsetX;
               arrowY = headPt.y + stackOffsetY;
               tangentAngle = Math.atan2(headPt.y - nextPt.y, headPt.x - nextPt.x);
             }
 
-            this.renderReverseArrowArc(ctx, arrowX, arrowY, R, tangentAngle, comboColor, currentTimeMs);
+            let arrowAlpha = 1.0;
+            if (currentTimeMs < sliderStart) {
+              arrowAlpha = Math.min(1.0, Math.max(0.0, (currentTimeMs - (sliderStart - this.preemptMs)) / timeFadeIn));
+            }
+
+            this.renderReverseArrowArc(ctx, arrowX, arrowY, R, tangentAngle, comboColor, 1.0, arrowAlpha);
           }
 
-          // Reverse Arrow Hit Explosions
-          const tailPt = rawPoints[rawPoints.length - 1];
-          const headPt = rawPoints[0];
-          const tailX = tailPt.x + stackOffsetX;
-          const tailY = tailPt.y + stackOffsetY;
-          const headX = headPt.x + stackOffsetX;
-          const headY = headPt.y + stackOffsetY;
-
+          // Reverse Arrow Hit Animations: the reverse arrow itself plays the hit animation, scaling from slider end center
           for (let span = 1; span < totalSpans; span++) {
             const repeatTime = sliderStart + (span / totalSpans) * sliderDuration;
             const elapsed = (currentTimeMs - repeatTime) / this.playbackRate;
             if (elapsed >= 0 && elapsed <= 240) {
-              const anchorX = (span % 2 === 1) ? tailX : headX;
-              const anchorY = (span % 2 === 1) ? tailY : headY;
-              this.renderHitExplosion(ctx, anchorX, anchorY, R, comboColor, elapsed, 1.0);
+              const isTailRepeat = (span % 2 === 1);
+              let anchorX: number;
+              let anchorY: number;
+              let tangentAngle: number;
+
+              if (isTailRepeat) {
+                const tailPt = rawPoints[rawPoints.length - 1];
+                let prevPt = rawPoints[Math.max(0, rawPoints.length - 2)];
+                for (let p = rawPoints.length - 2; p >= 0; p--) {
+                  if (Math.hypot(tailPt.x - rawPoints[p].x, tailPt.y - rawPoints[p].y) > 0.1) {
+                    prevPt = rawPoints[p];
+                    break;
+                  }
+                }
+                anchorX = tailPt.x + stackOffsetX;
+                anchorY = tailPt.y + stackOffsetY;
+                tangentAngle = Math.atan2(tailPt.y - prevPt.y, tailPt.x - prevPt.x);
+              } else {
+                const headPt = rawPoints[0];
+                let nextPt = rawPoints[Math.min(rawPoints.length - 1, 1)];
+                for (let p = 1; p < rawPoints.length; p++) {
+                  if (Math.hypot(headPt.x - rawPoints[p].x, headPt.y - rawPoints[p].y) > 0.1) {
+                    nextPt = rawPoints[p];
+                    break;
+                  }
+                }
+                anchorX = headPt.x + stackOffsetX;
+                anchorY = headPt.y + stackOffsetY;
+                tangentAngle = Math.atan2(headPt.y - nextPt.y, headPt.x - nextPt.x);
+              }
+
+              const hitProgress = elapsed / 240;
+              const easeOut = 1.0 - Math.pow(1.0 - hitProgress, 3);
+              const hitScale = 1.0 + 0.45 * easeOut;
+              const hitAlpha = Math.max(0, 1.0 - hitProgress);
+
+              this.renderReverseArrowArc(ctx, anchorX, anchorY, R, tangentAngle, comboColor, hitScale, hitAlpha);
             }
           }
         }
@@ -914,28 +886,33 @@ export class PlayfieldRenderer {
     R: number,
     tangentAngle: number,
     comboColor: string,
-    currentTimeMs: number
+    scale: number = 1.0,
+    alpha: number = 1.0
   ): void {
+    if (alpha <= 0.001) return;
+
     ctx.save();
 
-    const pulse = 1.0 + 0.08 * Math.sin(currentTimeMs * 0.008);
-    const arcRadius = R * 1.25 * pulse;
+    // Scale centered at slider end anchor (cx, cy)
+    ctx.translate(cx, cy);
+    ctx.scale(scale, scale);
+    ctx.translate(-cx, -cy);
+
+    const arcRadius = R * 1.25;
     const spread = 0.95;
 
-    ctx.save();
     ctx.beginPath();
     ctx.arc(cx, cy, arcRadius, tangentAngle - spread, tangentAngle + spread);
     ctx.strokeStyle = comboColor;
     ctx.lineWidth = 4.5;
-    ctx.globalAlpha = 0.4;
+    ctx.globalAlpha = 0.4 * alpha;
     ctx.lineCap = 'round';
     ctx.stroke();
 
     ctx.strokeStyle = '#FFFFFF';
     ctx.lineWidth = 2.5;
-    ctx.globalAlpha = 0.95;
+    ctx.globalAlpha = 0.95 * alpha;
     ctx.stroke();
-    ctx.restore();
 
     const apexDist = arcRadius + 1.0;
     const apexX = cx + Math.cos(tangentAngle) * apexDist;
@@ -952,6 +929,7 @@ export class PlayfieldRenderer {
     const rightY = apexY + Math.sin(tangentAngle - Math.PI / 2) * arrowWidth;
 
     ctx.fillStyle = '#FFFFFF';
+    ctx.globalAlpha = alpha;
     ctx.beginPath();
     ctx.moveTo(tipX, tipY);
     ctx.lineTo(leftX, leftY);
@@ -1498,6 +1476,482 @@ export class PlayfieldRenderer {
     ctx.lineTo(rightX - 4, cy);
     ctx.lineTo(rightX + 6, cy + 9);
     ctx.stroke();
+
+    ctx.restore();
+  }
+
+  /**
+   * Calculates real-time telemetry (SPM, total rotations, angle, tracking state)
+   * from replay cursor frames during a spinner.
+   */
+  private getSpinnerTelemetry(
+    spinnerStart: number,
+    currentTimeMs: number,
+    spinsRequired: number = 0
+  ): { spm: number; totalRotations: number; rotationAngle: number; isTracking: boolean; clearTimeMs: number } {
+    if (!this.replay || !this.replay.frames || this.replay.frames.length === 0 || currentTimeMs < spinnerStart) {
+      return { spm: 0, totalRotations: 0, rotationAngle: 0, isTracking: false, clearTimeMs: -1 };
+    }
+
+    const frames = this.replay.frames;
+    const cx = 256;
+    const cy = 192;
+
+    // Binary search for first frame >= spinnerStart
+    let l = 0;
+    let r = frames.length - 1;
+    while (l < r) {
+      const m = Math.floor((l + r) / 2);
+      if (frames[m].time < spinnerStart) l = m + 1;
+      else r = m;
+    }
+    const startIdx = l;
+
+    // Binary search for last frame <= currentTimeMs
+    l = 0;
+    r = frames.length - 1;
+    while (l < r) {
+      const m = Math.ceil((l + r) / 2);
+      if (frames[m].time <= currentTimeMs) l = m;
+      else r = m - 1;
+    }
+    const curIdx = l;
+
+    if (curIdx <= startIdx) {
+      return { spm: 0, totalRotations: 0, rotationAngle: 0, isTracking: false, clearTimeMs: -1 };
+    }
+
+    const requiredAngle = spinsRequired * Math.PI * 2;
+    let clearTimeMs = -1;
+
+    // Cumulative rotation from start to current
+    let totalAngle = 0;
+    let prevAngle = Math.atan2(frames[startIdx].y - cy, frames[startIdx].x - cx);
+
+    for (let i = startIdx + 1; i <= curIdx; i++) {
+      const curAngle = Math.atan2(frames[i].y - cy, frames[i].x - cx);
+      let diff = curAngle - prevAngle;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      totalAngle += diff;
+      prevAngle = curAngle;
+      if (clearTimeMs === -1 && requiredAngle > 0 && Math.abs(totalAngle) >= requiredAngle) {
+        clearTimeMs = frames[i].time;
+      }
+    }
+
+    // Instantaneous SPM over recent 500ms sliding window
+    const windowStart = Math.max(spinnerStart, currentTimeMs - 500);
+    let winStartIdx = startIdx;
+    while (winStartIdx < curIdx && frames[winStartIdx].time < windowStart) {
+      winStartIdx++;
+    }
+
+    let windowAngle = 0;
+    if (winStartIdx < curIdx) {
+      let winPrev = Math.atan2(frames[winStartIdx].y - cy, frames[winStartIdx].x - cx);
+      for (let i = winStartIdx + 1; i <= curIdx; i++) {
+        const curA = Math.atan2(frames[i].y - cy, frames[i].x - cx);
+        let diff = curA - winPrev;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        windowAngle += Math.abs(diff);
+        winPrev = curA;
+      }
+    }
+
+    const windowDuration = currentTimeMs - windowStart;
+    let spm = 0;
+    if (windowDuration >= 80) {
+      const windowRotations = windowAngle / (Math.PI * 2);
+      spm = Math.min(477, Math.max(0, Math.round((windowRotations / (windowDuration / 60000)))));
+    }
+
+    const totalRotations = Math.floor(Math.abs(totalAngle) / (Math.PI * 2));
+    const isTracking = spm > 25;
+
+    return {
+      spm,
+      totalRotations,
+      rotationAngle: totalAngle,
+      isTracking,
+      clearTimeMs
+    };
+  }
+
+  /**
+   * Evaluates the smoothly faded judgement color for spinner progress matching the top bar:
+   * Miss (--red-1: #ff6666) -> 50 (--orange-1: #ebc247) -> 100 (--lime-2: #99eb47) -> 300 (--blue-1: #66ccff)
+   */
+  private getSpinnerProgressColor(progress: number): string {
+    const COLOR_MISS: [number, number, number] = [255, 102, 102]; // #ff6666 (--red-1)
+    const COLOR_50:   [number, number, number] = [235, 194, 71];  // #ebc247 (--orange-1)
+    const COLOR_100:  [number, number, number] = [153, 235, 71];  // #99eb47 (--lime-2)
+    const COLOR_300:  [number, number, number] = [102, 204, 255]; // #66ccff (--blue-1)
+
+    if (progress < 0.72) {
+      return '#ff6666';
+    }
+    if (progress < 0.78) {
+      const t = (progress - 0.72) / 0.06;
+      const r = Math.round(COLOR_MISS[0] + (COLOR_50[0] - COLOR_MISS[0]) * t);
+      const g = Math.round(COLOR_MISS[1] + (COLOR_50[1] - COLOR_MISS[1]) * t);
+      const b = Math.round(COLOR_MISS[2] + (COLOR_50[2] - COLOR_MISS[2]) * t);
+      return `rgb(${r}, ${g}, ${b})`;
+    }
+    if (progress < 0.87) {
+      return '#ebc247';
+    }
+    if (progress < 0.93) {
+      const t = (progress - 0.87) / 0.06;
+      const r = Math.round(COLOR_50[0] + (COLOR_100[0] - COLOR_50[0]) * t);
+      const g = Math.round(COLOR_50[1] + (COLOR_100[1] - COLOR_50[1]) * t);
+      const b = Math.round(COLOR_50[2] + (COLOR_100[2] - COLOR_50[2]) * t);
+      return `rgb(${r}, ${g}, ${b})`;
+    }
+    if (progress < 0.97) {
+      return '#99eb47';
+    }
+    if (progress < 1.03) {
+      const t = (progress - 0.97) / 0.06;
+      const r = Math.round(COLOR_100[0] + (COLOR_300[0] - COLOR_100[0]) * t);
+      const g = Math.round(COLOR_100[1] + (COLOR_300[1] - COLOR_100[1]) * t);
+      const b = Math.round(COLOR_100[2] + (COLOR_300[2] - COLOR_100[2]) * t);
+      return `rgb(${r}, ${g}, ${b})`;
+    }
+    return '#66ccff';
+  }
+
+  /**
+   * Renders a HitObject Spinner matching the modern osu!lazer Argon skin design:
+   * - Pink expanding ring indicates the duration of the spinner as a whole (time elapsed vs total duration)
+   * - Side progress indicators are anchored at the center of their line arcs:
+   *   while spinning, they expand outward from the center; once cleared, they shrink in length
+   *   anchored at the center at the exact same speed as the white ring expands to the edges,
+   *   fading out at the end.
+   * - Outer white ring expands from 0.31 to 0.50 upon clearing to seal into a glowing complete circle.
+   * - osu!lazer standardized bonus scoring: displays +50 per full bonus spin at top (Image 2), up to MAX.
+   * - Concentric hub with white outer and pink inner rings; 25 turbine tick marks.
+   */
+  private renderArgonSpinner(
+    ctx: CanvasRenderingContext2D,
+    obj: any,
+    currentTimeMs: number,
+    comboColor: string
+  ): void {
+    const spinnerStart = obj.time;
+    const spinnerEnd = obj.endTime;
+    const duration = Math.max(1, spinnerEnd - spinnerStart);
+
+    if (currentTimeMs < spinnerStart - this.preemptMs || currentTimeMs > spinnerEnd + 260) {
+      return;
+    }
+
+    // Dynamic spins required calculation matching osu!lazer Spinner.cs
+    const od = this.effectiveOD;
+    const minRpm = od < 5 ? 90 + (150 - 90) * (od / 5) : 150 + (225 - 150) * ((od - 5) / 5);
+    const maxRpm = od < 5 ? 250 + (380 - 250) * (od / 5) : 380 + (430 - 380) * ((od - 5) / 5);
+    const secondsDuration = duration / 1000;
+    const spinsRequired = Math.max(1, Math.floor((minRpm / 60) * secondsDuration + 0.0001));
+    const bonusSpinsGap = 2;
+    const spinsRequiredForBonus = spinsRequired + bonusSpinsGap;
+    const maximumBonusSpins = Math.max(0, Math.floor((maxRpm / 60) * secondsDuration + 0.0001) - spinsRequired - bonusSpinsGap);
+    const bonusStep = 50; // osu!lazer standardized bonus step (+50 score per full bonus spin)
+
+    // Spinner telemetry from replay cursor
+    const telemetry = this.getSpinnerTelemetry(spinnerStart, currentTimeMs, spinsRequired);
+
+    // Calculate rotation count and progress towards 300 / 100 / 50
+    const totalRotations = this.replay?.frames?.length
+      ? Math.abs(telemetry.rotationAngle) / (Math.PI * 2)
+      : (currentTimeMs >= spinnerStart ? spinsRequired * Math.min(1.0, (currentTimeMs - spinnerStart) / duration) : 0);
+
+    // Progress towards clearing (1.0 = 300 / clear; 0.9 = 100; 0.75 = 50)
+    const progress = spinsRequired > 0 ? totalRotations / spinsRequired : 1.0;
+    const clampedProgress = Math.min(1.0, Math.max(0.0, progress));
+    const isComplete = progress >= 1.0;
+
+    // Smooth completion animation:
+    // Rate of transition t from 0 to 1 over 220ms
+    let clearTransition = 0.0;
+    if (isComplete) {
+      if (telemetry.clearTimeMs > 0) {
+        clearTransition = Math.min(1.0, Math.max(0.0, (currentTimeMs - telemetry.clearTimeMs) / 220));
+      } else {
+        clearTransition = Math.min(1.0, Math.max(0.0, (progress - 1.0) * 3));
+      }
+    }
+
+    // Dynamic bonus scoring (osu!lazer: +50 per full spin after spinsRequired + bonusSpinsGap)
+    const completedFullSpins = Math.floor(totalRotations);
+    const bonusSpins = Math.max(0, Math.min(maximumBonusSpins, completedFullSpins - spinsRequiredForBonus));
+    const bonusScore = bonusSpins * bonusStep;
+    const isMaxBonus = maximumBonusSpins > 0 && bonusSpins >= maximumBonusSpins;
+
+    // Compute alpha and scale transforms matching ArgonSpinnerDisc.cs
+    let alpha = 1.0;
+    let discScale = 1.0;
+
+    if (currentTimeMs < spinnerStart) {
+      const fadeElapsed = currentTimeMs - (spinnerStart - this.preemptMs);
+      const fadeInDuration = this.preemptMs * 0.4;
+      alpha = Math.max(0.01, Math.min(1.0, fadeElapsed / fadeInDuration));
+
+      // Ease-out scale from 0 to 1 over preempt duration
+      const preemptProgress = Math.max(0, Math.min(1.0, fadeElapsed / this.preemptMs));
+      discScale = Math.min(1.0, Math.max(0.05, 1 - Math.pow(1 - preemptProgress, 3)));
+    } else if (currentTimeMs > spinnerEnd) {
+      const elapsed = currentTimeMs - spinnerEnd;
+      alpha = Math.max(0.01, 1.0 - elapsed / 260);
+      discScale = 1.0 + 0.15 * Math.min(1.0, elapsed / 260); // Pulse outwards on clear
+    }
+
+    const cx = 256;
+    const cy = 192;
+    const discR = 152 * discScale;
+
+    ctx.save();
+    ctx.globalAlpha = Math.min(1.0, alpha);
+
+    // 1. Dark outer backdrop disc with subtle combo accent aura
+    ctx.fillStyle = 'rgba(9, 11, 16, 0.90)';
+    ctx.beginPath();
+    ctx.arc(cx, cy, discR, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Subtle combo perimeter aura
+    ctx.strokeStyle = comboColor;
+    ctx.lineWidth = 1.0;
+    ctx.globalAlpha = Math.min(0.35, alpha * 0.35);
+    ctx.stroke();
+    ctx.globalAlpha = Math.min(1.0, alpha);
+
+    // 2. Expanding radial fill disc (Argon pink/magenta #FC618F)
+    // Represents duration of the spinner as a whole (time elapsed vs duration)
+    const durationProgress = Math.min(1.0, Math.max(0.0, (currentTimeMs - spinnerStart) / duration));
+    const fillR = discR * (0.08 + 0.90 * durationProgress);
+    const grad = ctx.createRadialGradient(cx, cy, fillR * 0.10, cx, cy, fillR);
+    if (isComplete) {
+      grad.addColorStop(0, 'rgba(100, 25, 50, 0.60)');
+      grad.addColorStop(0.7, 'rgba(180, 45, 90, 0.70)');
+      grad.addColorStop(1.0, 'rgba(252, 97, 143, 0.92)');
+    } else {
+      const fillIntensity = telemetry.isTracking ? 0.65 : 0.40;
+      grad.addColorStop(0, `rgba(80, 20, 40, ${fillIntensity * 0.4})`);
+      grad.addColorStop(0.7, `rgba(160, 40, 80, ${fillIntensity * 0.6})`);
+      grad.addColorStop(1.0, `rgba(252, 97, 143, ${fillIntensity})`);
+    }
+
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(cx, cy, fillR, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Perimeter boundary of the fill disc
+    ctx.save();
+    ctx.strokeStyle = '#FC618F';
+    ctx.lineWidth = isComplete ? 2.5 * discScale : 1.8 * discScale;
+    ctx.shadowColor = '#FC618F';
+    ctx.shadowBlur = (isComplete ? 20 : 12) * discScale;
+    ctx.stroke();
+    ctx.restore();
+
+    // 3. 25 Turbine Tick Marks Ring (ArgonSpinnerTicks.cs)
+    const ticksR = discR * 0.76;
+    const ambientAngle = (currentTimeMs - spinnerStart) * 0.001;
+    const totalRotation = ambientAngle + telemetry.rotationAngle;
+    const tickW = 14 * discScale;
+    const tickH = 3.5 * discScale;
+    const tickHalfW = tickW / 2;
+    const tickHalfH = tickH / 2;
+
+    for (let i = 0; i < 25; i++) {
+      const tickAngle = totalRotation + (i / 25) * Math.PI * 2;
+      const tx = cx + Math.cos(tickAngle) * ticksR;
+      const ty = cy + Math.sin(tickAngle) * ticksR;
+
+      ctx.save();
+      ctx.translate(tx, ty);
+      // Slanted turbine angle matching Argon spinner design (Images 1 & 2)
+      ctx.rotate(tickAngle + Math.PI * 0.22);
+
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
+      ctx.lineWidth = 1.4 * discScale;
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.12)';
+
+      if (ctx.roundRect) {
+        ctx.beginPath();
+        ctx.roundRect(-tickHalfW, -tickHalfH, tickW, tickH, tickHalfH);
+        ctx.fill();
+        ctx.stroke();
+      } else {
+        ctx.fillRect(-tickHalfW, -tickHalfH, tickW, tickH);
+        ctx.strokeRect(-tickHalfW, -tickHalfH, tickW, tickH);
+      }
+      ctx.restore();
+    }
+
+    // 4. Smooth Outer Ring Expansion (ArgonSpinnerRingArc.cs)
+    // Top & Bottom arcs expand from 0.31 to 0.50 of circle upon completion, meeting at left and right edges
+    const arcFill = 0.31 + 0.19 * clearTransition;
+    const arcSpan = arcFill * Math.PI;
+    const ringLineWidth = (4.0 + 2.5 * clearTransition) * discScale;
+
+    ctx.save();
+    ctx.strokeStyle = '#FFFFFF';
+    ctx.lineWidth = ringLineWidth;
+    ctx.lineCap = 'round';
+    if (clearTransition > 0) {
+      ctx.shadowColor = '#FC618F';
+      ctx.shadowBlur = 22 * clearTransition * discScale;
+    }
+
+    // Top Arc (centered at -PI / 2, 12 o'clock)
+    ctx.beginPath();
+    ctx.arc(cx, cy, discR, -Math.PI / 2 - arcSpan, -Math.PI / 2 + arcSpan);
+    ctx.stroke();
+
+    // Bottom Arc (centered at +PI / 2, 6 o'clock)
+    ctx.beginPath();
+    ctx.arc(cx, cy, discR, Math.PI / 2 - arcSpan, Math.PI / 2 + arcSpan);
+    ctx.stroke();
+    ctx.restore();
+
+    // 5. Thicker Side Progress Arcs (ArgonSpinnerProgressArc.cs)
+    // Anchored at the center of each arc (0 for right, PI for left).
+    // While spinning: fills outward from center.
+    // Upon clearing: shrinks in length anchored at the center at the exact same speed as the white ring expands,
+    // while fading out at the end.
+    const sideHalfSpan = 0.15 * Math.PI;
+    const indicatorAlpha = Math.max(0.0, 1.0 - clearTransition);
+
+    if (indicatorAlpha > 0.005) {
+      ctx.save();
+      ctx.globalAlpha = Math.min(1.0, alpha * indicatorAlpha);
+
+      // Clean background track (no cyan aura/glow)
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
+      ctx.lineWidth = 14 * discScale;
+      ctx.lineCap = 'round';
+
+      // Right track (centered at 0, 3 o'clock)
+      ctx.beginPath();
+      ctx.arc(cx, cy, discR, -sideHalfSpan, sideHalfSpan);
+      ctx.stroke();
+
+      // Left track (centered at PI, 9 o'clock)
+      ctx.beginPath();
+      ctx.arc(cx, cy, discR, Math.PI - sideHalfSpan, Math.PI + sideHalfSpan);
+      ctx.stroke();
+
+      // Smooth color fading between judgement thresholds: Miss (#ED1121) -> 50 (#FFCC22) -> 100 (#74D128) -> 300 (#4AA4FF)
+      const progressColor = this.getSpinnerProgressColor(progress);
+
+      // Active Progress Fill (anchored at the center of each line arc)
+      const currentHalfSpan = isComplete
+        ? sideHalfSpan * (1.0 - clearTransition)
+        : sideHalfSpan * clampedProgress;
+
+      if (currentHalfSpan > 0.005) {
+        ctx.strokeStyle = progressColor;
+        ctx.lineWidth = 9.5 * discScale;
+        ctx.lineCap = 'round';
+
+        // Right side fill (anchored symmetrically at 0)
+        ctx.beginPath();
+        ctx.arc(cx, cy, discR, -currentHalfSpan, currentHalfSpan);
+        ctx.stroke();
+
+        // Left side fill (anchored symmetrically at PI)
+        ctx.beginPath();
+        ctx.arc(cx, cy, discR, Math.PI - currentHalfSpan, Math.PI + currentHalfSpan);
+        ctx.stroke();
+      }
+
+      ctx.restore();
+    }
+
+    // 6. Concentric dual-ring center hub (ArgonSpinnerDisc.cs)
+    const hubR = (telemetry.isTracking ? 15 : 24) * discScale;
+
+    // Dark core
+    ctx.fillStyle = '#090B10';
+    ctx.beginPath();
+    ctx.arc(cx, cy, hubR, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Outer white ring
+    ctx.strokeStyle = '#FFFFFF';
+    ctx.lineWidth = 3.0 * discScale;
+    ctx.beginPath();
+    ctx.arc(cx, cy, hubR, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Inner pink ring
+    ctx.strokeStyle = '#FC618F';
+    ctx.lineWidth = 3.5 * discScale;
+    ctx.beginPath();
+    ctx.arc(cx, cy, hubR * 0.72, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // 7. HUD Indicators (SPM & Top Status) with Smooth Fade-in
+    const hudFade = Math.min(1.0, Math.max(0.0, (currentTimeMs - (spinnerStart - 80)) / 160));
+    if (hudFade > 0.01) {
+      ctx.save();
+      ctx.globalAlpha = Math.min(1.0, alpha * hudFade);
+
+      // Bottom SPM Counter (matching Images 1 & 2)
+      ctx.fillStyle = '#FFFFFF';
+      ctx.font = `bold ${Math.round(28 * discScale)}px "Torus", "Inter", -apple-system, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(String(telemetry.spm), cx, cy + 62 * discScale);
+
+      // Subtitle "SPINS PER MINUTE"
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
+      ctx.font = `bold ${Math.round(9.5 * discScale)}px "Inter", -apple-system, sans-serif`;
+      ctx.fillText('SPINS PER MINUTE', cx, cy + 80 * discScale);
+
+      // Top Bonus Display (ArgonSpinner.cs)
+      // Displays accumulating bonus score (+50 each) or MAX once cleared
+      const topY = cy - 74 * discScale;
+      if (currentTimeMs >= spinnerEnd) {
+        if (progress < 0.75) {
+          ctx.fillStyle = '#ff6666';
+          ctx.font = `bold ${Math.round(22 * discScale)}px "Torus", "Inter", -apple-system, sans-serif`;
+          ctx.fillText('MISS', cx, topY);
+        } else if (progress < 0.90) {
+          ctx.fillStyle = '#ebc247';
+          ctx.font = `bold ${Math.round(22 * discScale)}px "Torus", "Inter", -apple-system, sans-serif`;
+          ctx.fillText('50', cx, topY);
+        } else if (progress < 1.00) {
+          ctx.fillStyle = '#99eb47';
+          ctx.font = `bold ${Math.round(22 * discScale)}px "Torus", "Inter", -apple-system, sans-serif`;
+          ctx.fillText('100', cx, topY);
+        } else {
+          // Completed
+          ctx.fillStyle = '#FFFFFF';
+          ctx.font = `bold ${Math.round(30 * discScale)}px "Torus", "Inter", -apple-system, sans-serif`;
+          if (isMaxBonus) {
+            ctx.fillText('MAX', cx, topY);
+          } else if (bonusScore > 0) {
+            ctx.fillText(String(bonusScore), cx, topY);
+          }
+        }
+      } else if (isComplete && bonusScore > 0) {
+        ctx.fillStyle = '#FFFFFF';
+        ctx.font = `bold ${Math.round(30 * discScale)}px "Torus", "Inter", -apple-system, sans-serif`;
+        ctx.shadowColor = 'rgba(255, 255, 255, 0.8)';
+        ctx.shadowBlur = 10 * discScale;
+        if (isMaxBonus) {
+          ctx.fillText('MAX', cx, topY);
+        } else {
+          ctx.fillText(String(bonusScore), cx, topY);
+        }
+      }
+
+      ctx.restore();
+    }
 
     ctx.restore();
   }

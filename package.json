@@ -11,6 +11,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@types/d3": "^7.4.3",
+    "d3": "^7.9.0",
     "fflate": "^0.8.3",
     "lzma": "^2.3.2",
     "uplot": "^1.6.32"

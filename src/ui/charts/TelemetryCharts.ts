@@ -43,6 +43,7 @@ export class TelemetryCharts {
   private maxTime: number = 1000;
   private currentMin: number = 0;
   private currentMax: number = 1000;
+  private btnLock: HTMLElement | null = null;
 
   // Key Overlay State
   private keyTileK1: HTMLElement | null = null;
@@ -54,10 +55,30 @@ export class TelemetryCharts {
   private keyLiveBpm: HTMLElement | null = null;
   private k1CumulativeTaps: Uint32Array | null = null;
   private k2CumulativeTaps: Uint32Array | null = null;
+  private firstRowEl: HTMLElement | null = null;
 
   constructor(container: HTMLElement, timeBus: TimeBus) {
     this.container = container;
     this.timeBus = timeBus;
+  }
+
+  public setFollowScrubber(follow: boolean): void {
+    this.followScrubber = follow;
+    if (this.btnLock) {
+      this.btnLock.setAttribute('aria-pressed', String(follow));
+      this.btnLock.classList.toggle('is-active', follow);
+      const iconSpan = this.btnLock.querySelector('.lock-icon') as HTMLElement | null;
+      if (iconSpan) {
+        iconSpan.innerHTML = follow ? CHART_ICONS.pin : CHART_ICONS.lock;
+      }
+      this.btnLock.title = follow
+        ? 'Scrubber Locked (Click to Unlock)'
+        : 'Lock playhead centered while timeline scrolls smoothly';
+    }
+  }
+
+  public isFollowScrubber(): boolean {
+    return this.followScrubber;
   }
 
   public destroy(): void {
@@ -83,6 +104,10 @@ export class TelemetryCharts {
     this.keyLiveBpm = null;
     this.k1CumulativeTaps = null;
     this.k2CumulativeTaps = null;
+    this.firstRowEl = null;
+    this.scrollWindowMs = 8000;
+    this.followScrubber = false;
+    this.btnLock = null;
   }
 
   public setData(evalResult: EvaluationResult, beatmap?: Beatmap): void {
@@ -136,10 +161,11 @@ export class TelemetryCharts {
     // 1. Channel 1: Hit Error & OD Windows (osu! default colors)
     // -------------------------------------------------------------
     const ch1Row = this.createChannelContainer(
-      `Hit Error (OD ${od.toFixed(1)})`,
-      'OD Window Bands: 300 (Blue) • 100 (Green) • 50 (Yellow) • <span style="color:#ED1121;">― Miss</span> • <span style="color:#B87BFF;">― Desync</span> • <span style="color:#8B5CF6;">▮ Stream</span> • <span style="color:#F43F5E;">▮ Deathstream</span> • <span style="color:#FFFFFF;">― Rolling Mean</span>',
+      'Hit Error',
+      'OD Window Bands: 300 (Blue) • 100 (Green) • 50 (Yellow) • <span style="color:#FF6666;">― Miss</span> • <span style="color:#B87BFF;">― Desync</span> • <span style="color:#8B5CF6;">▮ Stream</span> • <span style="color:#F43F5E;">▮ Deathstream</span> • <span style="color:#FFFFFF;">― Rolling Mean</span>',
       'ch1'
     );
+    this.firstRowEl = ch1Row.wrap;
 
     const ch1Data: uPlot.AlignedData = [
       evalResult.timePoints,
@@ -159,7 +185,7 @@ export class TelemetryCharts {
         },
         axes: [
           { show: false },
-          { stroke: '#5A6170', label: 'Δt (ms)', size: 50, grid: { stroke: '#1B1C24' } }
+          { stroke: '#A68E99', label: 'Δt (ms)', size: 50, grid: { stroke: '#33272D' } }
         ],
         series: [
           {},
@@ -210,7 +236,7 @@ export class TelemetryCharts {
               u.ctx.stroke();
 
               // Stream and Deathstream Range Overlays
-              // Purple for streams (distinct from desync #B87BFF) and Red for deathstreams (distinct from miss #ED1121)
+              // Purple for streams (distinct from desync #B87BFF) and Red for deathstreams (distinct from miss #FF6666)
               const patterns = evalResult.tapPatterns || [];
               const chartTop = u.bbox.top;
               const chartHeight = u.bbox.height;
@@ -372,14 +398,14 @@ export class TelemetryCharts {
 
                 // Genuine Aim Miss notes indicated by a thin red line with a red dot at 0ms mark
                 if (ev.judgement === HitJudgement.Miss) {
-                  u.ctx.strokeStyle = isCurrent ? '#FF3344' : 'rgba(237, 17, 33, 0.7)';
+                  u.ctx.strokeStyle = isCurrent ? '#FF3344' : 'rgba(255, 102, 102, 0.7)';
                   u.ctx.lineWidth = 1;
                   u.ctx.beginPath();
                   u.ctx.moveTo(px, top);
                   u.ctx.lineTo(px, bot);
                   u.ctx.stroke();
 
-                  u.ctx.fillStyle = '#ED1121';
+                  u.ctx.fillStyle = '#FF6666';
                   u.ctx.beginPath();
                   u.ctx.arc(px, yZero, isCurrent ? 3.2 : 1.8, 0, Math.PI * 2);
                   u.ctx.fill();
@@ -395,11 +421,11 @@ export class TelemetryCharts {
                 // Regular Hit dot (300, 100, 50)
                 const py = u.valToPos(ev.timeOffset, 'y', true);
 
-                let col = '#4AA4FF'; // osu! 300 Blue
+                let col = '#66CCFF'; // osu! 300 Blue
                 if (ev.judgement === HitJudgement.Ok) {
-                  col = '#74D128'; // osu! 100 Green
+                  col = '#99EB47'; // osu! 100 Green
                 } else if (ev.judgement === HitJudgement.Meh) {
-                  col = '#FFCC22'; // osu! 50 Yellow
+                  col = '#EBC247'; // osu! 50 Yellow
                 }
 
                 u.ctx.fillStyle = col;
@@ -427,11 +453,13 @@ export class TelemetryCharts {
       defaultHeight: 100,
       expandedHeight: 260
     });
-    ch1Row.expandBtn.onclick = (e) => {
-      e.stopPropagation();
-      this.toggleChannelExpand(ch1Row.wrap, ch1Chart, 100, 260);
-      this.notifyExpandStateChange();
-    };
+    if (ch1Row.expandBtn) {
+      ch1Row.expandBtn.onclick = (e) => {
+        e.stopPropagation();
+        this.toggleChannelExpand(ch1Row.wrap, ch1Chart, 100, 260);
+        this.notifyExpandStateChange();
+      };
+    }
 
     // -------------------------------------------------------------
     // 2. Channel 2: Tapping Dynamics (2K osu!mania Flipped Horizontal)
@@ -439,7 +467,8 @@ export class TelemetryCharts {
     const ch2Row = this.createChannelContainer(
       'Tapping',
       '<span style="color:#00D8FF;">■ Lane 1 (K1)</span> &nbsp;•&nbsp; <span style="color:#FF66AB;">■ Lane 2 (K2)</span> &nbsp;•&nbsp; <span style="color:#F59E0B;">― Finger Lock</span>',
-      'ch2'
+      'ch2',
+      false
     );
 
     // Add Live Key Overlay Tile Display into the Channel 2 Header
@@ -463,7 +492,7 @@ export class TelemetryCharts {
         axes: [
           { show: false },
           {
-            stroke: '#5A6170',
+            stroke: '#A68E99',
             label: 'Lanes',
             size: 50,
             grid: { show: false },
@@ -530,29 +559,6 @@ export class TelemetryCharts {
               u.ctx.moveTo(left, k2Y + laneH / 2);
               u.ctx.lineTo(left + w, k2Y + laneH / 2);
               u.ctx.stroke();
-
-              // --- Lane Badges on Left ---
-              // K1 Badge
-              u.ctx.fillStyle = 'rgba(0, 216, 255, 0.12)';
-              u.ctx.fillRect(left + 6, k1Y + 3, 24, laneH - 6);
-              u.ctx.strokeStyle = 'rgba(0, 216, 255, 0.5)';
-              u.ctx.strokeRect(left + 6, k1Y + 3, 24, laneH - 6);
-              u.ctx.fillStyle = '#00D8FF';
-              u.ctx.font = 'bold 9px monospace';
-              u.ctx.textAlign = 'center';
-              u.ctx.textBaseline = 'middle';
-              u.ctx.fillText('K1', left + 18, k1Y + laneH / 2);
-
-              // K2 Badge
-              u.ctx.fillStyle = 'rgba(255, 102, 171, 0.12)';
-              u.ctx.fillRect(left + 6, k2Y + 3, 24, laneH - 6);
-              u.ctx.strokeStyle = 'rgba(255, 102, 171, 0.5)';
-              u.ctx.strokeRect(left + 6, k2Y + 3, 24, laneH - 6);
-              u.ctx.fillStyle = '#FF66AB';
-              u.ctx.font = 'bold 9px monospace';
-              u.ctx.textAlign = 'center';
-              u.ctx.textBaseline = 'middle';
-              u.ctx.fillText('K2', left + 18, k2Y + laneH / 2);
 
               // --- Draw K1 Horizontal Mania Notes ---
               const k1Ints = evalResult.k1Intervals;
@@ -654,6 +660,39 @@ export class TelemetryCharts {
                 }
               }
 
+              // --- Lane Badges on Left (Drawn AFTER notes with solid backing to prevent notes showing over badges) ---
+              const badgeW = 28;
+              const badgeH = laneH - 6;
+              const badgeX = left + 6;
+
+              // K1 Badge
+              u.ctx.fillStyle = '#0c101c';
+              u.ctx.fillRect(badgeX - 1, k1Y + 2, badgeW + 2, badgeH + 2);
+              u.ctx.fillStyle = 'rgba(0, 216, 255, 0.16)';
+              u.ctx.fillRect(badgeX, k1Y + 3, badgeW, badgeH);
+              u.ctx.strokeStyle = 'rgba(0, 216, 255, 0.7)';
+              u.ctx.lineWidth = 1;
+              u.ctx.strokeRect(badgeX, k1Y + 3, badgeW, badgeH);
+              u.ctx.fillStyle = '#00D8FF';
+              u.ctx.font = 'bold 10px monospace';
+              u.ctx.textAlign = 'center';
+              u.ctx.textBaseline = 'middle';
+              u.ctx.fillText('K1', badgeX + badgeW / 2, k1Y + laneH / 2);
+
+              // K2 Badge
+              u.ctx.fillStyle = '#1c0c16';
+              u.ctx.fillRect(badgeX - 1, k2Y + 2, badgeW + 2, badgeH + 2);
+              u.ctx.fillStyle = 'rgba(255, 102, 171, 0.16)';
+              u.ctx.fillRect(badgeX, k2Y + 3, badgeW, badgeH);
+              u.ctx.strokeStyle = 'rgba(255, 102, 171, 0.7)';
+              u.ctx.lineWidth = 1;
+              u.ctx.strokeRect(badgeX, k2Y + 3, badgeW, badgeH);
+              u.ctx.fillStyle = '#FF66AB';
+              u.ctx.font = 'bold 10px monospace';
+              u.ctx.textAlign = 'center';
+              u.ctx.textBaseline = 'middle';
+              u.ctx.fillText('K2', badgeX + badgeW / 2, k2Y + laneH / 2);
+
               u.ctx.restore();
             }
           ]
@@ -663,24 +702,14 @@ export class TelemetryCharts {
       ch2Row.chartBody
     );
     this.charts.push(ch2Chart);
-    this.channels.push({
-      wrap: ch2Row.wrap,
-      chart: ch2Chart,
-      defaultHeight: 90,
-      expandedHeight: 240
-    });
-    ch2Row.expandBtn.onclick = (e) => {
-      e.stopPropagation();
-      this.toggleChannelExpand(ch2Row.wrap, ch2Chart, 90, 240);
-      this.notifyExpandStateChange();
-    };
+    // Channel 2 (Tapping) has a fixed height and is not expandable
 
     // -------------------------------------------------------------
     // 3. Channel 3: Accuracy Curves
     // -------------------------------------------------------------
     const ch3Row = this.createChannelContainer(
       'Accuracy Curves',
-      '<span style="color:#74D128;">― Cumulative Acc</span> &nbsp;•&nbsp; <span style="color:#4AA4FF;">― Rolling (2s Window)</span>',
+      '<span style="color:#99EB47;">― Cumulative Acc</span> &nbsp;•&nbsp; <span style="color:#66CCFF;">― Rolling (2s Window)</span>',
       'ch3'
     );
     const ch3Data: uPlot.AlignedData = [
@@ -706,19 +735,19 @@ export class TelemetryCharts {
         },
         axes: [
           { show: false },
-          { stroke: '#5A6170', label: 'Acc %', size: 50, grid: { stroke: '#1B1C24' } }
+          { stroke: '#A68E99', label: 'Acc %', size: 50, grid: { stroke: '#33272D' } }
         ],
         series: [
           {},
           {
             label: 'Cumulative Acc',
-            stroke: '#74D128',
+            stroke: '#99EB47',
             width: 2.2,
             points: { show: false }
           },
           {
             label: 'Rolling Acc (2s)',
-            stroke: '#4AA4FF',
+            stroke: '#66CCFF',
             width: 1.5,
             points: { show: false }
           }
@@ -748,18 +777,20 @@ export class TelemetryCharts {
       defaultHeight: 85,
       expandedHeight: 240
     });
-    ch3Row.expandBtn.onclick = (e) => {
-      e.stopPropagation();
-      this.toggleChannelExpand(ch3Row.wrap, ch3Chart, 85, 240);
-      this.notifyExpandStateChange();
-    };
+    if (ch3Row.expandBtn) {
+      ch3Row.expandBtn.onclick = (e) => {
+        e.stopPropagation();
+        this.toggleChannelExpand(ch3Row.wrap, ch3Chart, 85, 240);
+        this.notifyExpandStateChange();
+      };
+    }
 
     // -------------------------------------------------------------
     // 4. Channel 4: Kinematics & Strain (Frame-by-Frame, Raw Velocity)
     // -------------------------------------------------------------
     const ch4Row = this.createChannelContainer(
       'Velocity / Strain / Turn Angle',
-      '<span class="chart-legend-item" id="legend-ch4-vel" style="color:#C084FC; cursor:pointer;" title="Click to toggle Velocity">― Velocity (px/ms)</span> &nbsp;•&nbsp; <span class="chart-legend-item" id="legend-ch4-strain" style="color:#7C3AED; cursor:pointer;" title="Click to toggle Aim Strain">■ Aim Strain</span> &nbsp;•&nbsp; <span class="chart-legend-item" id="legend-ch4-angle" style="color:#F59E0B; cursor:pointer;" title="Click to toggle Turn Angle">― Turn Angle (deg)</span>',
+      '<span class="chart-legend-item" id="legend-ch4-vel" style="color:#66CCFF; cursor:pointer;" title="Click to toggle Velocity">― Velocity (px/ms)</span> &nbsp;•&nbsp; <span class="chart-legend-item" id="legend-ch4-strain" style="color:#FF66AB; cursor:pointer;" title="Click to toggle Aim Strain">■ Aim Strain</span> &nbsp;•&nbsp; <span class="chart-legend-item" id="legend-ch4-angle" style="color:#F59E0B; cursor:pointer;" title="Click to toggle Turn Angle">― Turn Angle (deg)</span>',
       'ch4'
     );
 
@@ -795,20 +826,10 @@ export class TelemetryCharts {
           {
             scale: 'vel',
             side: 3,
-            stroke: '#C084FC',
+            stroke: '#66CCFF',
             label: 'px/ms',
             size: 50,
-            grid: { stroke: '#1B1C24' }
-          },
-          {
-            scale: 'angle',
-            side: 1,
-            stroke: '#F59E0B',
-            label: 'deg (°)',
-            size: 45,
-            grid: { show: false },
-            splits: [0, 45, 90, 135, 180],
-            values: (_u, vals) => vals.map(v => `${v}°`)
+            grid: { stroke: '#33272D' }
           }
         ],
         series: [
@@ -816,18 +837,18 @@ export class TelemetryCharts {
           {
             scale: 'vel',
             label: 'Velocity',
-            stroke: '#C084FC',
+            stroke: '#66CCFF',
             width: 1.5,
-            fill: 'rgba(192, 132, 252, 0.08)',
+            fill: 'rgba(102, 204, 255, 0.08)',
             points: { show: false },
             value: (_u, v) => v == null ? '--' : `${v.toFixed(2)} px/ms`
           },
           {
             scale: 'strain',
             label: 'Aim Strain',
-            stroke: 'rgba(124, 58, 237, 0.85)',
+            stroke: 'rgba(255, 102, 171, 0.85)',
             width: 1.2,
-            fill: 'rgba(124, 58, 237, 0.15)',
+            fill: 'rgba(255, 102, 171, 0.15)',
             points: { show: false },
             value: (_u, v) => v == null ? '--' : `${v.toFixed(1)} strain`
           },
@@ -841,7 +862,29 @@ export class TelemetryCharts {
             value: (_u, v) => v == null ? '--' : `${Math.round(v)}°`
           }
         ],
-        hooks: {}
+        hooks: {
+          // Floating turn-angle ticks (0-180°) pinned to the plot's right
+          // edge: the scale reference survives without a layout axis, so
+          // this plot keeps full width and identical geometry with the rest.
+          draw: [
+            (u) => {
+              const right = u.bbox.left + u.bbox.width;
+              const top = u.bbox.top;
+              const bot = top + u.bbox.height;
+              u.ctx.save();
+              u.ctx.font = '9px monospace';
+              u.ctx.textAlign = 'right';
+              u.ctx.textBaseline = 'middle';
+              u.ctx.fillStyle = 'rgba(245, 158, 11, 0.75)';
+              for (const v of [0, 45, 90, 135, 180]) {
+                const y = u.valToPos(v, 'angle', true);
+                if (y < top || y > bot) continue;
+                u.ctx.fillText(`${v}°`, right - 4, y);
+              }
+              u.ctx.restore();
+            }
+          ]
+        }
       },
       ch4Data,
       ch4Row.chartBody
@@ -853,18 +896,20 @@ export class TelemetryCharts {
       defaultHeight: 100,
       expandedHeight: 240
     });
-    ch4Row.expandBtn.onclick = (e) => {
-      e.stopPropagation();
-      this.toggleChannelExpand(ch4Row.wrap, ch4Chart, 100, 240);
-      this.notifyExpandStateChange();
-    };
+    if (ch4Row.expandBtn) {
+      ch4Row.expandBtn.onclick = (e) => {
+        e.stopPropagation();
+        this.toggleChannelExpand(ch4Row.wrap, ch4Chart, 100, 240);
+        this.notifyExpandStateChange();
+      };
+    }
 
     // -------------------------------------------------------------
     // 5. Channel 5: Tapping Speed & Stamina Strain (True Unscaled Metrics)
     // -------------------------------------------------------------
     const ch5Row = this.createChannelContainer(
       'Tapping Speed & Stamina Strain',
-      '<span class="chart-legend-item" id="legend-ch5-tap" style="color:#00D8FF; cursor:pointer;" title="Click to toggle Tap BPM">― Tap BPM</span> &nbsp;•&nbsp; <span class="chart-legend-item" id="legend-ch5-target" style="color:#64748B; cursor:pointer;" title="Click to toggle Target BPM">┆ Target BPM</span> &nbsp;•&nbsp; <span class="chart-legend-item" id="legend-ch5-stamina" style="color:#F43F5E; cursor:pointer;" title="Click to toggle Stamina Strain">■ Stamina Strain</span> &nbsp;•&nbsp; <span class="chart-legend-item" id="legend-ch5-control" style="color:#A78BFA; cursor:pointer;" title="Click to toggle Finger Control">― Finger Control</span>',
+      '<span class="chart-legend-item" id="legend-ch5-tap" style="color:#66FF73; cursor:pointer;" title="Click to toggle Tap BPM">― Tap BPM</span> &nbsp;•&nbsp; <span class="chart-legend-item" id="legend-ch5-target" style="color:#64748B; cursor:pointer;" title="Click to toggle Target BPM">┆ Target BPM</span> &nbsp;•&nbsp; <span class="chart-legend-item" id="legend-ch5-stamina" style="color:#FF6666; cursor:pointer;" title="Click to toggle Stamina Strain">■ Stamina Strain</span> &nbsp;•&nbsp; <span class="chart-legend-item" id="legend-ch5-control" style="color:#A78BFA; cursor:pointer;" title="Click to toggle Finger Control">― Finger Control</span>',
       'ch5'
     );
 
@@ -913,20 +958,10 @@ export class TelemetryCharts {
           {
             scale: 'bpm',
             side: 3,
-            stroke: '#00D8FF',
+            stroke: '#66FF73',
             label: 'BPM',
             size: 50,
-            grid: { stroke: '#1B1C24' }
-          },
-          {
-            scale: 'control',
-            side: 1,
-            stroke: '#A78BFA',
-            label: 'Control (0-100)',
-            size: 45,
-            grid: { show: false },
-            splits: [0, 25, 50, 75, 100],
-            values: (_u, vals) => vals.map(v => `${v}`)
+            grid: { stroke: '#33272D' }
           }
         ],
         series: [
@@ -934,9 +969,9 @@ export class TelemetryCharts {
           {
             scale: 'bpm',
             label: 'Tap BPM',
-            stroke: '#00D8FF',
+            stroke: '#66FF73',
             width: 1.8,
-            fill: 'rgba(0, 216, 255, 0.08)',
+            fill: 'rgba(102, 255, 115, 0.08)',
             points: { show: false },
             value: (_u, v) => v == null ? '--' : `${Math.round(v)} BPM`
           },
@@ -952,9 +987,9 @@ export class TelemetryCharts {
           {
             scale: 'stamina',
             label: 'Stamina Strain',
-            stroke: 'rgba(244, 63, 94, 0.85)',
+            stroke: 'rgba(255, 102, 102, 0.85)',
             width: 1,
-            fill: 'rgba(244, 63, 94, 0.18)',
+            fill: 'rgba(255, 102, 102, 0.18)',
             points: { show: false },
             value: (_u, v) => v == null ? '--' : `${v.toFixed(1)} strain`
           },
@@ -969,7 +1004,28 @@ export class TelemetryCharts {
             value: (_u, v) => v == null ? '--' : `${Math.round(v)} / 100`
           }
         ],
-        hooks: {}
+        hooks: {
+          // Floating control ticks (0-100) pinned to the plot's right edge:
+          // same treatment as ch4's turn angles — reference without layout.
+          draw: [
+            (u) => {
+              const right = u.bbox.left + u.bbox.width;
+              const top = u.bbox.top;
+              const bot = top + u.bbox.height;
+              u.ctx.save();
+              u.ctx.font = '9px monospace';
+              u.ctx.textAlign = 'right';
+              u.ctx.textBaseline = 'middle';
+              u.ctx.fillStyle = 'rgba(167, 139, 250, 0.75)';
+              for (const v of [0, 25, 50, 75, 100]) {
+                const y = u.valToPos(v, 'control', true);
+                if (y < top || y > bot) continue;
+                u.ctx.fillText(`${v}`, right - 4, y);
+              }
+              u.ctx.restore();
+            }
+          ]
+        }
       },
       ch5Data,
       ch5Row.chartBody
@@ -981,11 +1037,13 @@ export class TelemetryCharts {
       defaultHeight: 100,
       expandedHeight: 240
     });
-    ch5Row.expandBtn.onclick = (e) => {
-      e.stopPropagation();
-      this.toggleChannelExpand(ch5Row.wrap, ch5Chart, 100, 240);
-      this.notifyExpandStateChange();
-    };
+    if (ch5Row.expandBtn) {
+      ch5Row.expandBtn.onclick = (e) => {
+        e.stopPropagation();
+        this.toggleChannelExpand(ch5Row.wrap, ch5Chart, 100, 240);
+        this.notifyExpandStateChange();
+      };
+    }
 
     // Bind click-to-toggle series visibility on legend items
     const bindToggle = (elId: string, chart: uPlot, seriesIdx: number) => {
@@ -1018,6 +1076,9 @@ export class TelemetryCharts {
     `;
     this.container.appendChild(this.playheadEl);
     this.playheadBadge = this.playheadEl.querySelector('#playhead-badge') as HTMLElement;
+    if (this.firstRowEl) {
+      this.playheadEl.style.top = `${this.firstRowEl.offsetTop}px`;
+    }
 
     // TimeBus subscription for synchronized rendering
     this.unsubscribeTimeBus = this.timeBus.subscribe((t) => {
@@ -1035,6 +1096,9 @@ export class TelemetryCharts {
           c.setSize({ width: newWidth, height: c.height });
         }
       }
+      if (this.firstRowEl && this.playheadEl) {
+        this.playheadEl.style.top = `${this.firstRowEl.offsetTop}px`;
+      }
     });
     this.resizeObserver.observe(this.container);
 
@@ -1051,11 +1115,16 @@ export class TelemetryCharts {
         <span class="telemetry-toolbar-hint">Ctrl + Scroll to Zoom • Shift + Scroll to Pan • Double-Click to Reset</span>
       </div>
       <div class="telemetry-toolbar-right">
-        <button class="btn-tool" id="btn-zoom-in" title="Zoom In (Ctrl + Scroll Up)">${CHART_ICONS.zoomIn} In</button>
-        <button class="btn-tool" id="btn-zoom-out" title="Zoom Out (Ctrl + Scroll Down)">${CHART_ICONS.zoomOut} Out</button>
-        <button class="btn-tool" id="btn-zoom-reset" title="Reset Zoom to Full Extent">${CHART_ICONS.reset} Reset</button>
-        <button class="btn-tool btn-lock" id="btn-lock-scrubber" title="Lock playhead centered while timeline scrolls smoothly">
-          <span class="lock-icon">${CHART_ICONS.lock}</span> Lock Scrubber
+        <div class="btn-group-segmented" role="group" aria-label="Timeline zoom controls">
+          <button class="btn-tool-segment" id="btn-zoom-out" title="Zoom Out (Ctrl + Scroll Down)">${CHART_ICONS.zoomOut}<span>Out</span></button>
+          <button class="btn-tool-segment" id="btn-zoom-in" title="Zoom In (Ctrl + Scroll Up)">${CHART_ICONS.zoomIn}<span>In</span></button>
+        </div>
+        <button class="btn-tool" id="btn-zoom-reset" title="Reset Zoom to Full Extent">${CHART_ICONS.reset}<span>Reset</span></button>
+        <div class="toolbar-separator"></div>
+        <button class="osu-switch cyan btn-lock" id="btn-lock-scrubber" aria-pressed="false" title="Lock playhead centered while timeline scrolls smoothly">
+          <span class="lock-icon">${CHART_ICONS.lock}</span>
+          <span class="switch-label">Lock Scrubber</span>
+          <span class="switch-nub"><span class="nub-fill"></span></span>
         </button>
       </div>
     `;
@@ -1066,26 +1135,25 @@ export class TelemetryCharts {
     const btnReset = toolbar.querySelector('#btn-zoom-reset') as HTMLButtonElement;
     const btnLock = toolbar.querySelector('#btn-lock-scrubber') as HTMLButtonElement;
 
+    this.btnLock = btnLock;
+    this.setFollowScrubber(false);
+
     btnZoomIn.onclick = () => this.zoom(0.7);
     btnZoomOut.onclick = () => this.zoom(1.4);
     btnReset.onclick = () => {
-      this.followScrubber = false;
-      btnLock.classList.remove('is-active');
-      btnLock.innerHTML = `<span class="lock-icon">${CHART_ICONS.lock}</span> Lock Scrubber`;
+      this.scrollWindowMs = 8000;
+      this.setFollowScrubber(false);
       this.applyXScaleToAllCharts(this.minTime, this.maxTime);
     };
 
     btnLock.onclick = () => {
-      this.followScrubber = !this.followScrubber;
-      if (this.followScrubber) {
-        btnLock.classList.add('is-active');
-        btnLock.innerHTML = `<span class="lock-icon">${CHART_ICONS.pin}</span> Scrubber Locked`;
+      const nextLocked = !this.followScrubber;
+      this.setFollowScrubber(nextLocked);
+      if (nextLocked) {
         const cur = this.timeBus.getCurrentTime();
         const half = this.scrollWindowMs / 2;
         this.applyXScaleToAllCharts(cur - half, cur + half);
       } else {
-        btnLock.classList.remove('is-active');
-        btnLock.innerHTML = `<span class="lock-icon">${CHART_ICONS.lock}</span> Lock Scrubber`;
         this.applyXScaleToAllCharts(this.minTime, this.maxTime);
       }
     };
@@ -1095,17 +1163,15 @@ export class TelemetryCharts {
     const hud = document.createElement('div');
     hud.className = 'key-overlay-hud';
     hud.innerHTML = `
-      <div class="key-tile" id="key-tile-k1">
-        <span class="key-tile-name">K1</span>
-        <span class="key-tile-count" id="key-count-k1">0</span>
-        <span class="key-tile-bpm" id="key-bpm-k1">-- BPM</span>
+      <div class="argon-key argon-key-k1" id="key-tile-k1" title="K1 Keypress Counter (Cyan)">
+        <div class="argon-key-indicator"></div>
+        <span class="argon-key-count" id="key-count-k1">0</span>
       </div>
-      <div class="key-tile" id="key-tile-k2">
-        <span class="key-tile-name">K2</span>
-        <span class="key-tile-count" id="key-count-k2">0</span>
-        <span class="key-tile-bpm" id="key-bpm-k2">-- BPM</span>
+      <div class="argon-key argon-key-k2" id="key-tile-k2" title="K2 Keypress Counter (Pink)">
+        <div class="argon-key-indicator"></div>
+        <span class="argon-key-count" id="key-count-k2">0</span>
       </div>
-      <div class="key-bpm-box" id="key-live-bpm">-- Stream BPM</div>
+      <div class="argon-bpm-badge" id="key-live-bpm">-- Stream BPM</div>
     `;
     parent.appendChild(hud);
 
@@ -1140,10 +1206,10 @@ export class TelemetryCharts {
     this.keyTileK2.classList.toggle('is-pressed', isK2);
 
     if (this.keyCountK1 && this.k1CumulativeTaps) {
-      this.keyCountK1.textContent = String(this.k1CumulativeTaps[idx] || 0);
+      this.keyCountK1.textContent = (this.k1CumulativeTaps[idx] || 0).toLocaleString();
     }
     if (this.keyCountK2 && this.k2CumulativeTaps) {
-      this.keyCountK2.textContent = String(this.k2CumulativeTaps[idx] || 0);
+      this.keyCountK2.textContent = (this.k2CumulativeTaps[idx] || 0).toLocaleString();
     }
 
     const clockRate = this.evalResult?.gameplayRate || 1.0;
@@ -1294,6 +1360,8 @@ export class TelemetryCharts {
 
     // Double-click to reset zoom
     const dblClickHandler = () => {
+      this.scrollWindowMs = 8000;
+      this.setFollowScrubber(false);
       this.applyXScaleToAllCharts(this.minTime, this.maxTime);
     };
 
@@ -1306,6 +1374,10 @@ export class TelemetryCharts {
 
   private updatePlayhead(currentTimeMs: number): void {
     if (!this.playheadEl || !this.playheadBadge || this.charts.length === 0) return;
+
+    if (this.firstRowEl && (!this.playheadEl.style.top || this.playheadEl.style.top === '')) {
+      this.playheadEl.style.top = `${this.firstRowEl.offsetTop}px`;
+    }
 
     const chart = this.charts[0];
     if (!chart || !this.evalResult) return;
@@ -1361,8 +1433,9 @@ export class TelemetryCharts {
   private createChannelContainer(
     title: string,
     subtitle: string,
-    id: string
-  ): { wrap: HTMLElement; chartBody: HTMLElement; expandBtn: HTMLButtonElement; headerLeft: HTMLElement } {
+    id: string,
+    expandable: boolean = true
+  ): { wrap: HTMLElement; chartBody: HTMLElement; expandBtn: HTMLButtonElement | null; headerLeft: HTMLElement } {
     const wrap = document.createElement('div');
     wrap.className = 'telemetry-row';
     wrap.id = `row-${id}`;
@@ -1383,14 +1456,17 @@ export class TelemetryCharts {
 
     headerLeft.appendChild(titleSpan);
     headerLeft.appendChild(subSpan);
-
-    const expandBtn = document.createElement('button');
-    expandBtn.className = 'btn-expand';
-    expandBtn.innerHTML = CHART_ICONS.expand;
-    expandBtn.title = 'Expand chart height vertically';
-
     header.appendChild(headerLeft);
-    header.appendChild(expandBtn);
+
+    let expandBtn: HTMLButtonElement | null = null;
+    if (expandable) {
+      expandBtn = document.createElement('button');
+      expandBtn.className = 'btn-expand';
+      expandBtn.innerHTML = CHART_ICONS.expand;
+      expandBtn.title = 'Expand chart height vertically';
+      header.appendChild(expandBtn);
+    }
+
     wrap.appendChild(header);
 
     const chartBody = document.createElement('div');

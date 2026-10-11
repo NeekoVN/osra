@@ -1,18 +1,26 @@
-# OSRA - osu! Replay Analyzer
+<p align="center">
+  <img src="assets/osra.png" alt="OSRA Logo" width="160" />
+</p>
 
-A browser-based replay telemetry and kinematic analysis tool for **osu!standard**, built against the
-**osu!lazer** ruleset specification.
+<h1 align="center">OSRA - osu! Replay Analyzer</h1>
+
+<p align="center">
+  A browser-based replay telemetry and kinematic analysis tool for <b>osu!standard</b>, built against the<br />
+  <b>osu!lazer</b> ruleset specification.
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/TypeScript-5.8-informational" alt="TypeScript" />
+  <img src="https://img.shields.io/badge/Vite-6.2-red" alt="Vite" />
+  <img src="https://img.shields.io/badge/Vitest-3.0-green" alt="Vitest" />
+  <img src="https://img.shields.io/badge/ruleset-osu!lazer-8A2BE2" alt="Ruleset" />
+  <img src="https://img.shields.io/badge/status-alpha-orange" alt="Status" />
+</p>
 
 OSRA parses raw `.osr` replay files and `.osu`/`.osz` beatmaps entirely **in the browser**, then
 reconstructs the mechanical story of a play: hit timing and unstable rate, aim-vs-tap desyncs,
 cursor kinematics, tapping BPM and finger locks, beat-based rolling accuracy, spatial hit scatter,
 and lazer-correct difficulty/performance calculation powered by Rust compiled to WebAssembly.
-
-![TypeScript](https://img.shields.io/badge/TypeScript-5.8-informational)
-![Vite](https://img.shields.io/badge/Vite-6.2-red)
-![Vitest](https://img.shields.io/badge/Vitest-3.0-green)
-![Ruleset](https://img.shields.io/badge/ruleset-osu!lazer-8A2BE2)
-![Status](https://img.shields.io/badge/status-alpha-orange)
 
 ---
 
@@ -21,7 +29,7 @@ and lazer-correct difficulty/performance calculation powered by Rust compiled to
 | | |
 | :---: | :---: |
 | ![Analyzer workspace](assets/screenshots/analyzer.png) | ![Beatmap import](assets/screenshots/beatmapimport.png) |
-| Main analysis workspace | Beatmap ingestion (replay & beatmap drop zones) |
+| Main analysis workspace | Beatmap ingestion |
 | ![Hit error timeline](assets/screenshots/hiterror.png) | ![Hit scatter heatmap](assets/screenshots/hitscatter.png) |
 | Hit error & timing windows timeline | Hit scatter heatmap (absolute + jump-aligned) |
 | ![Telemetry charts](assets/screenshots/telemetry.png) | |
@@ -129,7 +137,7 @@ The difficulty engine is a pre-built WebAssembly bundle checked into `src/vendor
 [rosu-pp-gemini](https://github.com/Rarendary/rosu-pp-gemini) - itself a fork of
 [rosu-pp](https://github.com/MaxOhn/rosu-pp) that ports the lazer `reading` skill
 (`reading` difficulty, `reading_difficult_note_count`, `pp_reading`). None of the binding code or
-difficulty math is original; it is upstream work modified to expose the gemini fork's API.
+difficulty math is original; it is upstream work modified to expose the rosu-pp-gemini fork's API.
 
 The reading skill contributions are exposed in the header skill pills (`Read %`) and in the per-note
 PP breakdown alongside aim, speed, and accuracy.
@@ -217,10 +225,11 @@ Highlights of what is planned next:
 
 - **ppy / osu** - [osu!lazer](https://github.com/ppy/osu) and its ruleset definitions, hit windows,
   UR computation, and difficulty math, which this project is calibrated against.
+- **ppy / osu-resources** - [osu-resources](https://github.com/ppy/osu-resources) for the in-game icons.
 - **MaxOhn** - [rosu-pp](https://github.com/MaxOhn/rosu-pp), the Rust difficulty/performance engine,
   and the original [rosu-pp-js](https://github.com/MaxOhn/rosu-pp-js) WebAssembly bindings.
 - **Rarendary** - [rosu-pp-gemini](https://github.com/Rarendary/rosu-pp-gemini), the lazer `reading`
   skill fork OSRA builds against.
 - **NeekoVN** - [rosu-pp-js](https://github.com/NeekoVN/rosu-pp-js) mod of the original bindings,
-  adapted to build against the gemini fork's API.
+  adapted to build against the rosu-pp-gemini fork's API.
 - **leeoniya** - [uPlot](https://github.com/leeoniya/uPlot) for the telemetry charting.

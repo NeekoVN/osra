@@ -1,5 +1,36 @@
 import { TimedHitEvent, HitJudgement, DesyncType } from '../../core/types/telemetry.ts';
 
+/**
+ * Resolves a CSS custom property to a canvas-usable colour string.
+ * Handles indirection like `--surface: var(--b4)` by chasing references,
+ * and validates through a scratch canvas context.
+ */
+function resolveThemeColor(varName: string, fallback: string): string {
+  try {
+    const probe = document.createElement('canvas').getContext('2d');
+    const styles = getComputedStyle(document.documentElement);
+    let value = styles.getPropertyValue(varName).trim();
+    // Chase var() indirection (getPropertyValue returns specified value).
+    for (let i = 0; i < 5 && value.startsWith('var('); i++) {
+      const inner = value.slice(4, -1).trim().split(',')[0].trim();
+      value = styles.getPropertyValue(inner).trim() || inner;
+    }
+    if (!value) return fallback;
+    if (probe) {
+      probe.fillStyle = '#000';
+      probe.fillStyle = value;
+      const resolved = probe.fillStyle;
+      // If the browser normalised it (or kept the hsl() string), use it.
+      if (resolved && resolved !== '#000000') return value;
+      // Fall through: still return the raw value, canvas accepts hsl()/color-mix.
+      return value;
+    }
+    return value;
+  } catch {
+    return fallback;
+  }
+}
+
 export class HitScatterRenderer {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
@@ -128,7 +159,7 @@ export class HitScatterRenderer {
     const h = this.offscreenCanvas.height;
 
     ctx.clearRect(0, 0, w, h);
-    ctx.fillStyle = '#14151B';
+    ctx.fillStyle = resolveThemeColor('--b7', '#14151B');
     ctx.fillRect(0, 0, w, h);
 
     const headerHeight = 44;
@@ -200,8 +231,9 @@ export class HitScatterRenderer {
     ctx.font = '10px -apple-system, sans-serif';
     ctx.fillText('Solid: 1.0R Hitcircle Boundary • Dashed: 80% Normal Aim Zone', cx, 34);
 
-    // Outer boundary disc background (for out-of-circle stray misses)
-    ctx.fillStyle = '#0E0F14';
+    // Outer boundary disc background (for out-of-circle stray misses).
+    // Recessed against the --surface panel background.
+    ctx.fillStyle = resolveThemeColor('--b6', '#0E0F14');
     ctx.beginPath();
     ctx.arc(cx, cy, Math.max(1, radius * 1.15), 0, Math.PI * 2);
     ctx.fill();
@@ -272,7 +304,7 @@ export class HitScatterRenderer {
     ctx.fillText('Jump-Aligned • Overaim / Underaim evaluated outside 80% Normal Aim Zone', cx, 34);
 
     // Outer boundary disc background (for out-of-circle stray misses)
-    ctx.fillStyle = '#0E0F14';
+    ctx.fillStyle = resolveThemeColor('--b6', '#0E0F14');
     ctx.beginPath();
     ctx.arc(cx, cy, Math.max(1, radius * 1.15), 0, Math.PI * 2);
     ctx.fill();
@@ -402,7 +434,7 @@ export class HitScatterRenderer {
    */
   private renderPermanentLegend(ctx: CanvasRenderingContext2D, w: number, h: number): void {
     ctx.save();
-    ctx.fillStyle = '#1D202B';
+    ctx.fillStyle = resolveThemeColor('--rail', '#1D202B');
     ctx.fillRect(16, h - 18, w - 32, 1);
 
     ctx.font = 'bold 9px -apple-system, sans-serif';

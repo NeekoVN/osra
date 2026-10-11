@@ -6,34 +6,77 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OSRA - osu! Replay Analyzer</title>
   <link rel="stylesheet" href="/src/styles/main.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/7.3.1/css/all.min.css"
+    integrity="sha512-QeR2VH+lsBE5LSAe1Q5EnTBbe7XTBubt8dG93Y7gidSgdMCr8nVqKcfKAMyN96SV8KDbZVTDXChatu5G2KQGzg=="
+    crossorigin="anonymous" referrerpolicy="no-referrer">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="icon" type="image/x-icon" href="/favicon.ico">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
 </head>
 
-<body>
-  <!-- Top Navigation & Metadata Bar -->
-  <header>
-    <div class="brand" id="brand-header" title="Click to load another replay">
-      <div class="osu-cookie">osu!</div>
-      <div class="brand-text">
-        <h1 id="top-title">REPLAY ANALYZER</h1>
-        <span id="top-subtitle">osu!standard • lazer ruleset</span>
+<body class="ingestion-active">
+  <!-- Appbar: single top bar (brand | title | stats | controls) -->
+  <header class="appbar">
+    <div class="brand-cell" id="brand-header" title="Click to load another replay">
+      <img src="/src/assets/icons/LogoOsra.png" alt="Logo" height="32" width="32" style="margin-right: 8px;">
+      <div>
+        <div class="side-title">OSRA</div>
+        <div class="side-sub">REPLAY ANALYZER</div>
       </div>
     </div>
 
-    <div class="header-metadata" id="header-metadata" style="display: none;">
-      <div class="meta-item">
-        <span class="meta-label">PLAYER</span>
-        <span class="meta-val" id="meta-player">Player</span>
+    <div class="head-title">
+      <span class="t"><span id="top-title">REPLAY ANALYZER</span><span class="t-mods"
+          id="meta-mods-container"></span><span class="sr-pill" id="meta-sr-pill" hidden></span></span>
+      <span class="s" id="top-subtitle">osu!standard • lazer ruleset</span>
+    </div>
+
+    <!-- 2x2 Beatmap Difficulty Stats Grid (distinct category from gameplay performance) -->
+    <div class="beatmap-diff-grid" id="beatmap-diff-grid" style="display: none;">
+      <div class="diff-grid-cell" id="cell-cs" title="Circle Size">
+        <span class="diff-grid-label">CS</span>
+        <span class="diff-grid-val" id="meta-diff-cs">0.0</span>
       </div>
-      <div class="meta-item">
-        <span class="meta-label">ACCURACY</span>
-        <span class="meta-val highlight" id="meta-acc">100.00%</span>
+      <div class="diff-grid-cell" id="cell-hp" title="HP Drain Rate">
+        <span class="diff-grid-label">HP</span>
+        <span class="diff-grid-val" id="meta-diff-hp">0.0</span>
       </div>
-      <div class="meta-item">
-        <span class="meta-label">COMBO</span>
-        <span class="meta-val" id="meta-combo">0x</span>
+      <div class="diff-grid-cell" id="cell-od" title="Overall Difficulty">
+        <span class="diff-grid-label">OD</span>
+        <span class="diff-grid-val" id="meta-diff-od">0.0</span>
       </div>
-      <div class="meta-item meta-judgements">
-        <span class="meta-label">JUDGEMENTS</span>
+      <div class="diff-grid-cell" id="cell-ar" title="Approach Rate">
+        <span class="diff-grid-label">AR</span>
+        <span class="diff-grid-val" id="meta-diff-ar">0.0</span>
+      </div>
+    </div>
+
+    <div class="hstats" id="header-metadata" style="display: none;">
+      <div class="stat">
+        <span class="sl">ACC</span>
+        <span class="sv lime" id="meta-acc">100.00%</span>
+      </div>
+      <div class="stat">
+        <span class="sl">COMBO</span>
+        <span class="sv"><span id="meta-combo">0x</span> <span class="sv-sub" id="meta-combo-max"></span></span>
+      </div>
+      <div class="stat">
+        <span class="sl">UR</span>
+        <span class="sv accent" id="meta-ur">0.00</span>
+      </div>
+      <div class="stat">
+        <span class="sl">PP</span>
+        <span class="sv gold" id="meta-pp">0pp</span>
+        <div class="skill-pills" id="skill-pills">
+          <!-- <span class="skill-pill aim" id="skill-aim" title="Aim PP">Aim 0%</span>
+          <span class="skill-pill speed" id="skill-speed" title="Speed PP">Spd 0%</span>
+          <span class="skill-pill acc" id="skill-acc" title="Accuracy PP">Acc 0%</span>
+          <span class="skill-pill reading" id="skill-reading" title="Reading PP">Read 0%</span> -->
+        </div>
+      </div>
+      <div class="stat">
+        <span class="sl">JUDGE</span>
         <div class="judgements-strip">
           <span class="badge-judge val-300" title="300s (Great)"><span class="judge-dot val-300">●</span> <span
               id="meta-count-300">0</span></span>
@@ -45,96 +88,91 @@
               id="meta-count-miss">0</span></span>
         </div>
       </div>
-      <div class="meta-item meta-sliders" id="meta-sliders-container" style="display: none;">
-        <span class="meta-label">SLIDERS</span>
-        <div class="judgements-strip">
-          <span class="badge-judge val-tick" id="badge-slider-ticks" title="Slider Large Ticks Hit / Total"><span
-              class="judge-dot" style="color: #60a5fa;">▲</span> <span id="meta-slider-ticks">0/0</span></span>
-          <span class="badge-judge val-end" id="badge-slider-ends" title="Slider Ends (Tail) Hit / Total"><span
-              class="judge-dot" style="color: #a78bfa;">◈</span> <span id="meta-slider-ends">0/0</span></span>
-        </div>
-      </div>
-      <div class="meta-item">
-        <span class="meta-label">UNSTABLE RATE</span>
-        <span class="meta-val cyan" id="meta-ur">0.00</span>
-      </div>
-      <div class="meta-item meta-performance">
-        <div class="meta-perf-content">
-          <div class="meta-perf-main">
-            <span class="meta-label">PERFORMANCE</span>
-            <span class="meta-val gold" id="meta-pp">0pp <span class="meta-sub" id="meta-max-pp"
-                style="font-size: 11px; color: var(--text-secondary); font-weight: normal;">/ 0pp</span></span>
-          </div>
-          <div class="skill-pills" id="skill-pills">
-            <span class="skill-pill aim" id="skill-aim" title="Aim PP">Aim 0%</span>
-            <span class="skill-pill speed" id="skill-speed" title="Speed PP">Spd 0%</span>
-            <span class="skill-pill acc" id="skill-acc" title="Accuracy PP">Acc 0%</span>
-            <span class="skill-pill reading" id="skill-reading" title="Reading PP">Read 0%</span>
-          </div>
-        </div>
-      </div>
-      <div class="meta-item" id="meta-mods-container"></div>
     </div>
 
-    <div id="header-status">
-      <span class="badge" id="status-badge">Awaiting Files</span>
+    <div class="head-ctrl">
+      <span class="rank-tile" id="meta-rank" hidden></span>
+      <button class="import-btn" id="btn-import">Import</button>
     </div>
   </header>
 
-  <!-- Ingestion Dropzones (Collapsible once loaded) -->
-  <section class="ingestion-section" id="ingestion-section">
-    <div class="dropzone-container">
-      <div class="dropzone" id="replay-dropzone">
-        <input type="file" id="replay-input" accept=".osr">
-        <div class="dropzone-icon">
-          <svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"
-            stroke-linecap="round" stroke-linejoin="round">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-            <polyline points="14 2 14 8 20 8"></polyline>
-            <line x1="16" y1="13" x2="8" y2="13"></line>
-            <line x1="16" y1="17" x2="8" y2="17"></line>
-            <polyline points="10 9 9 9 8 9"></polyline>
-          </svg>
-        </div>
-        <div class="dropzone-title">Drop Replay File (.osr)</div>
-        <div class="dropzone-desc" id="replay-desc">Drag &amp; drop your .osr replay here, or click to browse</div>
-      </div>
+  <!-- Authentic Ingestion Stage -->
+  <section class="ingestion-stage" id="ingestion-stage">
+    <div class="logo-anchor" id="logo-anchor">
+      <!-- Circular Progress Ring around Logo -->
+      <svg class="ring-svg" viewBox="0 0 320 320">
+        <circle class="ring-track" cx="160" cy="160" r="142"></circle>
+        <circle class="ring-progress" id="ring-progress" cx="160" cy="160" r="142"></circle>
+      </svg>
 
-      <div class="dropzone" id="beatmap-dropzone">
-        <input type="file" id="beatmap-input" accept=".osu,.osz">
-        <div class="dropzone-icon">
-          <svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"
-            stroke-linecap="round" stroke-linejoin="round">
-            <line x1="16.5" y1="9.4" x2="7.5" y2="4.21"></line>
-            <path
-              d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z">
-            </path>
-            <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
-            <line x1="12" y1="22.08" x2="12" y2="12"></line>
-          </svg>
-        </div>
-        <div class="dropzone-title">Drop Beatmap or Pack (.osz / .osu)</div>
-        <div class="dropzone-desc" id="beatmap-desc">Drag &amp; drop .osz archive or .osu file, or auto-fetch from mirror
+      <!-- OsuLogo Rig -->
+      <div class="logo-hover-container" id="logo-hover-container">
+        <div class="logo-bounce-container" id="logo-bounce-container">
+          <div class="logo-beat-container" id="logo-beat-container">
+            <!-- Ghost Ripple: duplicate of the logo itself expanding and fading on beat -->
+            <img src="/src/assets/osra.png" class="logo-ripple-img" alt="" onerror="this.src='src/assets/osra.png';">
+            <!-- Main Logo -->
+            <img src="/src/assets/osra.png" alt="osu!lazer" class="logo-main-img"
+              onerror="this.src='src/assets/osra.png';">
+            <div class="flash-layer" id="flash-layer"></div>
+            <input type="file" id="replay-input" accept=".osr,.osu,.osz,.zip">
+          </div>
         </div>
       </div>
     </div>
 
-    <div class="toolbar-banner" id="toolbar-banner">
-      <div class="mirror-status" id="mirror-status">
-        <span class="pulse-indicator" id="pulse-indicator"></span>
-        <span id="mirror-msg">Auto-fetch: Enabled (queries public mirrors automatically on .osr drop)</span>
+    <!-- Fallback & Manual Dock (revealed on slide-left) -->
+    <div class="dock" id="dock">
+      <div class="replay-bar" id="dock-replay-bar" style="display: none;">
+        <div>
+          <span id="dock-player">Player</span>
+          <span class="replay-bar-hash" id="dock-hash"></span>
+        </div>
+        <span class="replay-bar-mods" id="dock-mods"></span>
       </div>
-      <div class="audio-container" id="audio-container" style="display: none;">
-        <audio id="audio-player" controls></audio>
+
+      <div class="dock-drop" id="dock-drop">
+        <input type="file" id="beatmap-input" accept=".osu,.osz,.zip">
+        <span>.osz / .osu</span>
       </div>
+
+      <div class="diff-ladder" id="diff-ladder" style="display: none;">
+        <div id="diff-buttons"></div>
+      </div>
+
+      <button type="button" class="btn-submit" id="dock-submit-btn" style="display: none;">➔</button>
     </div>
 
-    <!-- Difficulty selector if .osz has multiple diffs and no replay -->
-    <div id="diff-selector-container" style="display: none; margin-top: 12px;">
-      <h3 style="font-size: 13px; color: var(--text-secondary);">Select Difficulty from .osz Package:</h3>
-      <div id="diff-buttons" style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px;"></div>
-    </div>
+    <audio id="audio-player" style="display: none;"></audio>
   </section>
+
+  <!-- Layered Waves Transition (WaveContainer.cs) -->
+  <div class="waves-viewport" id="waves-viewport">
+    <div class="wave-track w1">
+      <svg viewBox="0 0 1440 900" preserveAspectRatio="none" class="wave-svg">
+        <path d="M0,170 C360,260 520,60 840,150 C1120,220 1280,80 1440,130 L1440,900 L0,900 Z" fill="hsl(9, 40%, 30%)">
+        </path>
+      </svg>
+    </div>
+    <div class="wave-track w2">
+      <svg viewBox="0 0 1440 900" preserveAspectRatio="none" class="wave-svg">
+        <path d="M0,130 C280,40 500,220 800,110 C1100,10 1260,180 1440,90 L1440,900 L0,900 Z" fill="hsl(9, 60%, 50%)">
+        </path>
+      </svg>
+    </div>
+    <div class="wave-track w3">
+      <svg viewBox="0 0 1440 900" preserveAspectRatio="none" class="wave-svg">
+        <path d="M0,150 C340,240 540,50 820,130 C1100,220 1260,70 1440,120 L1440,900 L0,900 Z" fill="hsl(9, 80%, 60%)">
+        </path>
+      </svg>
+    </div>
+    <div class="wave-track w4">
+      <svg viewBox="0 0 1440 900" preserveAspectRatio="none" class="wave-svg">
+        <path d="M0,90 C320,190 520,30 800,110 C1080,190 1260,40 1440,80 L1440,900 L0,900 Z" fill="hsl(9, 10%, 9%)">
+        </path>
+      </svg>
+    </div>
+  </div>
 
   <!-- Main Analyzer Workspace — edge-to-edge 2-column layout -->
   <main class="analyzer-workspace" id="analyzer-workspace" style="display: none;">
@@ -144,15 +182,33 @@
       <div class="panel playfield-panel" id="playfield-panel">
         <div class="panel-header">
           <div style="display: flex; align-items: center; gap: 8px;">
-            <span>PLAYFIELD (512 × 384)</span>
-            <div class="header-tags">
-              <button type="button" class="tag-pill cyan" id="btn-toggle-trail" title="Click to toggle Cursor Trail">Trail: On</button>
-              <button type="button" class="tag-pill purple off" id="btn-toggle-path-trail" title="Click to enable Long Path Trail">Path Trail: Off</button>
-              <button type="button" class="tag-pill pink" id="btn-toggle-vectors" title="Click to toggle Error Vectors">Error Vectors: On</button>
+            <h2 class="panel-title">PLAYFIELD (512 × 384)</h2>
+            <div class="header-tags" role="toolbar" aria-label="Playfield visual overlays">
+              <button type="button" class="osu-switch cyan is-active" id="btn-toggle-trail" aria-pressed="true"
+                title="Click to disable Cursor Trail">
+                <span class="switch-label">Trail</span>
+                <span class="switch-nub"><span class="nub-fill"></span></span>
+              </button>
+              <button type="button" class="osu-switch purple off" id="btn-toggle-path-trail" aria-pressed="false"
+                title="Click to enable Long Path Trail">
+                <span class="switch-label">Path Trail</span>
+                <span class="switch-nub"><span class="nub-fill"></span></span>
+              </button>
+              <button type="button" class="osu-switch pink is-active" id="btn-toggle-vectors" aria-pressed="true"
+                title="Click to disable Error Vectors">
+                <span class="switch-label">Error Vectors</span>
+                <span class="switch-nub"><span class="nub-fill"></span></span>
+              </button>
             </div>
           </div>
           <button class="btn-panel-action" id="btn-expand-playfield" title="Toggle Expanded Playfield">
-            <svg class="icon-expand" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>
+            <svg class="icon-expand" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="15 3 21 3 21 9"></polyline>
+              <polyline points="9 21 3 21 3 15"></polyline>
+              <line x1="21" y1="3" x2="14" y2="10"></line>
+              <line x1="3" y1="21" x2="10" y2="14"></line>
+            </svg>
           </button>
         </div>
         <div class="canvas-wrap">
@@ -164,11 +220,17 @@
       <div class="panel scatter-panel" id="scatter-panel">
         <div class="panel-header">
           <div style="display: flex; align-items: center; gap: 8px;">
-            <span>HIT SCATTER ANALYSIS</span>
+            <h2 class="panel-title">HIT SCATTER ANALYSIS</h2>
             <span class="header-subtitle">Absolute (Left) vs Relative Jump Aligned (Right)</span>
           </div>
           <button class="btn-panel-action" id="btn-expand-scatter" title="Toggle Expanded Hit Scatter">
-            <svg class="icon-expand" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>
+            <svg class="icon-expand" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="15 3 21 3 21 9"></polyline>
+              <polyline points="9 21 3 21 3 15"></polyline>
+              <line x1="21" y1="3" x2="14" y2="10"></line>
+              <line x1="3" y1="21" x2="10" y2="14"></line>
+            </svg>
           </button>
         </div>
         <div class="canvas-wrap scatter-canvas-wrap">
@@ -176,17 +238,8 @@
         </div>
       </div>
 
-      <!-- Events Inspector -->
+      <!-- Events Inspector — tabs act as the panel header (Penpot design) -->
       <div class="panel incidents-panel" id="incidents-panel">
-        <div class="panel-header" id="incidents-header">
-          <div style="display: flex; align-items: center; gap: 8px;">
-            <span>EVENTS</span>
-            <span class="incident-header-count" id="incident-header-count" style="font-size: 11px; color: var(--text-muted); font-weight: normal;"></span>
-          </div>
-          <button class="btn-panel-action" id="btn-toggle-events" title="Minimize / Expand Events Panel">
-            <svg class="icon-minimize" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-          </button>
-        </div>
         <div class="incidents-container" id="incidents-container"></div>
       </div>
     </div>
@@ -200,11 +253,17 @@
       <div class="panel telemetry-panel">
         <div class="panel-header">
           <div style="display: flex; align-items: center; gap: 8px;">
-            <span>TELEMETRY TIME-SERIES</span>
+            <h2 class="panel-title">TELEMETRY TIME-SERIES</h2>
             <span class="header-subtitle">Synchronized multi-channel telemetry bus</span>
           </div>
           <button class="btn-panel-action" id="btn-toggle-expand-all-charts" title="Expand All Telemetry Charts">
-            <svg class="icon-expand" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>
+            <svg class="icon-expand" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="15 3 21 3 21 9"></polyline>
+              <polyline points="9 21 3 21 3 15"></polyline>
+              <line x1="21" y1="3" x2="14" y2="10"></line>
+              <line x1="3" y1="21" x2="10" y2="14"></line>
+            </svg>
           </button>
         </div>
         <div class="charts-container" id="charts-container"></div>

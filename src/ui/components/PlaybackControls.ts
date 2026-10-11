@@ -1,13 +1,16 @@
 import { TimeBus } from '../TimeBus.ts';
 import { TimedHitEvent, HitJudgement, DesyncType } from '../../core/types/telemetry.ts';
+import notchTickUrl from '../../assets/sounds/notch-tick.wav';
+import osdChangeUrl from '../../assets/sounds/osd-change.wav';
+import submitSelectUrl from '../../assets/sounds/submit-select.wav';
 
 const ICONS = {
-  play: `<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" style="margin-left: 2px;"><polygon points="6 3 20 12 6 21 6 3"></polygon></svg>`,
-  pause: `<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"></rect><rect x="14" y="4" width="4" height="16" rx="1"></rect></svg>`,
-  skipIntro: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 4px;"><polygon points="13 19 22 12 13 5 13 19"></polygon><polygon points="2 19 11 12 2 5 2 19"></polygon></svg>`,
-  volumeHigh: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>`,
-  volumeMed: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>`,
-  volumeMute: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg>`
+  play: `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 20 12 6 21 6 3"></polygon></svg>`,
+  pause: `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"></rect><rect x="14" y="4" width="4" height="16" rx="1"></rect></svg>`,
+  skipIntro: `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="13 19 22 12 13 5 13 19"></polygon><polygon points="2 19 11 12 2 5 2 19"></polygon></svg>`,
+  volumeHigh: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>`,
+  volumeMed: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>`,
+  volumeMute: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg>`
 };
 
 export class PlaybackControls {
@@ -25,6 +28,11 @@ export class PlaybackControls {
   private currentSkipGaps: Array<{ from: number; to: number }> = [];
   private lastIsPlaying: boolean | null = null;
 
+  private sampleNotch = new Audio(notchTickUrl);
+  private sampleOsd = new Audio(osdChangeUrl);
+  private sampleSubmit = new Audio(submitSelectUrl);
+  private lastNotchTime: number = 0;
+
   constructor(container: HTMLElement, timeBus: TimeBus) {
     this.container = container;
     this.timeBus = timeBus;
@@ -33,11 +41,44 @@ export class PlaybackControls {
     this.timeBus.subscribe((t) => this.onTimeUpdate(t));
   }
 
+  private playNotchSound(val: number): void {
+    const now = performance.now();
+    if (now - this.lastNotchTime < 35) return;
+    this.lastNotchTime = now;
+    try {
+      const clone = this.sampleNotch.cloneNode() as HTMLAudioElement;
+      clone.volume = 0.35;
+      let rate = 0.99 + (Math.random() * 0.02) + val * 0.2;
+      if (val === 0 || val === 1) rate -= 0.5;
+      clone.playbackRate = Math.max(0.5, Math.min(2.0, rate));
+      clone.play().catch(() => {});
+    } catch (_) {}
+  }
+
+  private playOsdSound(): void {
+    try {
+      const clone = this.sampleOsd.cloneNode() as HTMLAudioElement;
+      clone.volume = 0.35;
+      clone.play().catch(() => {});
+    } catch (_) {}
+  }
+
+  private playSubmitSound(): void {
+    try {
+      const clone = this.sampleSubmit.cloneNode() as HTMLAudioElement;
+      clone.volume = 0.4;
+      clone.play().catch(() => {});
+    } catch (_) {}
+  }
+
   private buildUI(): void {
     this.container.innerHTML = `
       <div class="playback-bar">
         <div class="playback-buttons">
-          <button class="btn-play" id="btn-play-toggle" title="Play / Pause (Space)">${ICONS.play}</button>
+          <button class="btn-play" id="btn-play-toggle" title="Play / Pause (Space)" aria-label="Play">
+            <span class="btn-play-icon icon-play">${ICONS.play}</span>
+            <span class="btn-play-icon icon-pause">${ICONS.pause}</span>
+          </button>
           <button class="btn-skip-intro" id="btn-skip-intro" style="display: none;" title="Skip Intro (Space)">${ICONS.skipIntro}Skip Intro</button>
           <div class="playback-rates">
             <button class="rate-btn" data-rate="0.5">0.5x</button>
@@ -54,7 +95,8 @@ export class PlaybackControls {
         </div>
         <div class="playback-volume">
           <button class="btn-volume" id="btn-volume" title="Mute / Unmute">${ICONS.volumeMed}</button>
-          <input type="range" id="volume-slider" class="volume-slider" min="0" max="1" step="0.05" value="0.6" title="Volume: 40%">
+          <input type="range" id="volume-slider" class="volume-slider" min="0" max="1" step="0.01" value="0.6" style="--vol-pct: 60%;" title="Volume: 60%">
+          <span class="volume-val" id="volume-val">60%</span>
         </div>
       </div>
     `;
@@ -68,43 +110,52 @@ export class PlaybackControls {
 
     const volumeBtn = this.container.querySelector('#btn-volume') as HTMLButtonElement;
     const volumeSlider = this.container.querySelector('#volume-slider') as HTMLInputElement;
+    const volumeVal = this.container.querySelector('#volume-val') as HTMLElement;
+    let prevVolume = this.timeBus.getVolume() || 0.6;
 
     const updateVolumeIcon = (vol: number) => {
       volumeBtn.innerHTML = vol === 0 ? ICONS.volumeMute : (vol < 0.5 ? ICONS.volumeMed : ICONS.volumeHigh);
     };
 
+    const applyVolume = (vol: number, source?: 'slider' | 'toggle') => {
+      const clamped = Math.max(0, Math.min(1, vol));
+      this.timeBus.setVolume(clamped);
+      volumeSlider.value = clamped.toString();
+      const pct = Math.round(clamped * 100);
+      volumeSlider.style.setProperty('--vol-pct', `${pct}%`);
+      volumeSlider.title = `Volume: ${pct}%`;
+      if (volumeVal) volumeVal.textContent = `${pct}%`;
+      updateVolumeIcon(clamped);
+
+      if (source === 'slider') {
+        this.playNotchSound(clamped);
+      } else if (source === 'toggle') {
+        this.playOsdSound();
+      }
+    };
+
+    // Initial sync
+    applyVolume(this.timeBus.getVolume());
+
     volumeSlider.addEventListener('input', () => {
       const vol = parseFloat(volumeSlider.value);
-      this.timeBus.setVolume(vol);
-      updateVolumeIcon(vol);
-      volumeSlider.title = `Volume: ${Math.round(vol * 100)}%`;
+      if (vol > 0) prevVolume = vol;
+      applyVolume(vol, 'slider');
     });
 
     volumeBtn.onclick = () => {
       if (this.timeBus.getVolume() > 0) {
-        this.timeBus.setVolume(0);
-        volumeSlider.value = '0';
-        updateVolumeIcon(0);
+        prevVolume = this.timeBus.getVolume() || 0.6;
+        applyVolume(0, 'toggle');
       } else {
-        this.timeBus.setVolume(0.4);
-        volumeSlider.value = '0.4';
-        updateVolumeIcon(0.4);
-      }
-    };
-
-    const updatePlayBtn = () => {
-      const isPlaying = this.timeBus.getIsPlaying();
-      if (this.lastIsPlaying !== isPlaying) {
-        this.lastIsPlaying = isPlaying;
-        this.playBtn.innerHTML = isPlaying ? ICONS.pause : ICONS.play;
-        this.playBtn.title = isPlaying ? 'Pause (Space)' : 'Play (Space)';
+        applyVolume(prevVolume || 0.6, 'toggle');
       }
     };
 
     this.playBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       this.timeBus.togglePlay();
-      updatePlayBtn();
+      this.updatePlayBtnState();
     });
 
     this.skipBtn.onclick = () => {
@@ -186,13 +237,15 @@ export class PlaybackControls {
     const isPlaying = this.timeBus.getIsPlaying();
     if (this.lastIsPlaying !== isPlaying) {
       this.lastIsPlaying = isPlaying;
-      this.playBtn.innerHTML = isPlaying ? ICONS.pause : ICONS.play;
+      this.playBtn.classList.toggle('is-playing', isPlaying);
       this.playBtn.title = isPlaying ? 'Pause (Space)' : 'Play (Space)';
+      this.playBtn.setAttribute('aria-label', isPlaying ? 'Pause' : 'Play');
     }
   }
 
   public skipIntro(): void {
     if (this.firstObjectTime > 0) {
+      this.playSubmitSound();
       const targetTime = Math.max(0, this.firstObjectTime - 1000);
       this.timeBus.seek(targetTime);
     }
