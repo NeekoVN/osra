@@ -1762,7 +1762,8 @@ audio {
 
 .btn-play-icon.icon-play {
   opacity: 1;
-  transform: scale(1) translateX(1px); /* 1px optical center for triangular play glyph */
+  transform: scale(1) translateX(1px);
+  /* 1px optical center for triangular play glyph */
 }
 
 .btn-play-icon.icon-pause {
@@ -2120,7 +2121,7 @@ audio {
 }
 
 .telemetry-subtitle {
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 400;
   color: var(--text-faint);
   white-space: nowrap;
@@ -2157,6 +2158,34 @@ audio {
   width: 100%;
   box-sizing: border-box;
   overflow: hidden;
+}
+
+#row-ch-diff .chart-body,
+#row-ch-diff .u-wrap {
+  border-radius: var(--r-panel, 8px);
+  overflow: hidden;
+}
+
+.diff-sr-chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 16px;
+  font-weight: 800;
+  padding: 2px 8px;
+  border-radius: 50px;
+  background: var(--h2);
+  color: #fff;
+  margin-left: 0;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background-color 200ms ease, color 200ms ease;
+  /* line-height: 1.2; */
+}
+
+.diff-sr-chip .sr-star {
+  margin-right: 4px;
+  font-size: 9.6px;
+  transition: color 200ms ease;
 }
 
 /* Telemetry Toolbar & Scrubber Lock */
