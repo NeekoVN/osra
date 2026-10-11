@@ -240,52 +240,54 @@ export async function calculateRollingDifficulty(
 
   const points: RollingDifficultyPoint[] = [];
 
-  for (let t = startMs; t <= endMs; t += stepMs) {
-    const windowStart = t - halfWindow;
-    const windowEnd = t + halfWindow;
+  try {
+    for (let t = startMs; t <= endMs; t += stepMs) {
+      const windowStart = t - halfWindow;
+      const windowEnd = t + halfWindow;
 
-    const startIdx = lowerBound(objects, windowStart);
-    const endIdx = upperBound(objects, windowEnd);
-    const countInWindow = Math.max(0, endIdx - startIdx);
+      const startIdx = lowerBound(objects, windowStart);
+      const endIdx = upperBound(objects, windowEnd);
+      const countInWindow = Math.max(0, endIdx - startIdx);
 
-    // Breaks or isolated single notes have 0 pattern strain
-    if (countInWindow < 2) {
-      points.push({
-        timeMs: t,
-        starRating: 0,
-        aim: 0,
-        speed: 0,
-        reading: 0,
-        flashlight: 0,
-        objectCount: countInWindow
-      });
-      continue;
+      // Breaks or isolated single notes have 0 pattern strain
+      if (countInWindow < 2) {
+        points.push({
+          timeMs: t,
+          starRating: 0,
+          aim: 0,
+          speed: 0,
+          reading: 0,
+          flashlight: 0,
+          objectCount: countInWindow
+        });
+        continue;
+      }
+
+      // Include 1 lead-in object before the window if present to preserve movement/strain continuity
+      const sliceStartIdx = startIdx > 0 ? startIdx - 1 : startIdx;
+      const sliceObjects = objects.slice(sliceStartIdx, endIdx);
+
+      const sliceContent = buildSliceOsuContent(beatmap, sliceObjects);
+      const rosuMap = new RosuBeatmap(sliceContent);
+
+      try {
+        const attrs = diffCalc.calculate(rosuMap);
+        points.push({
+          timeMs: t,
+          starRating: Math.round(attrs.stars * 100) / 100,
+          aim: Math.round((attrs.aim ?? 0) * 100) / 100,
+          speed: Math.round((attrs.speed ?? 0) * 100) / 100,
+          reading: Math.round(((attrs as unknown as { readingDifficulty?: number }).readingDifficulty ?? 0) * 100) / 100,
+          flashlight: Math.round((attrs.flashlight ?? 0) * 100) / 100,
+          objectCount: countInWindow
+        });
+      } finally {
+        rosuMap.free();
+      }
     }
-
-    // Include 1 lead-in object before the window if present to preserve movement/strain continuity
-    const sliceStartIdx = startIdx > 0 ? startIdx - 1 : startIdx;
-    const sliceObjects = objects.slice(sliceStartIdx, endIdx);
-
-    const sliceContent = buildSliceOsuContent(beatmap, sliceObjects);
-    const rosuMap = new RosuBeatmap(sliceContent);
-
-    try {
-      const attrs = diffCalc.calculate(rosuMap);
-      points.push({
-        timeMs: t,
-        starRating: Math.round(attrs.stars * 100) / 100,
-        aim: Math.round((attrs.aim ?? 0) * 100) / 100,
-        speed: Math.round((attrs.speed ?? 0) * 100) / 100,
-        reading: Math.round(((attrs as unknown as { readingDifficulty?: number }).readingDifficulty ?? 0) * 100) / 100,
-        flashlight: Math.round((attrs.flashlight ?? 0) * 100) / 100,
-        objectCount: countInWindow
-      });
-    } finally {
-      rosuMap.free();
-    }
+  } finally {
+    diffCalc.free();
   }
-
-  diffCalc.free();
 
   // Steady-state infinite series compensation with power-law skill scaling.
   // osu!'s strain accumulation uses a geometric series with decay r = 0.9 per 400ms section.

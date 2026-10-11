@@ -531,6 +531,7 @@ export class TelemetryCharts {
     // -------------------------------------------------------------
     // Channel: Rolling Difficulty (Directly below Hit Error)
     // -------------------------------------------------------------
+    let diffRowWrap: HTMLElement | null = null;
     if (this.rollingResult && this.rollingResult.points.length > 0) {
       const rollingResult = this.rollingResult;
       const peakSR = rollingResult.maxStarRating || 5.0;
@@ -542,6 +543,7 @@ export class TelemetryCharts {
         '',
         'ch-diff'
       );
+      diffRowWrap = diffRow.wrap;
 
       // Create persistent live Difficulty HUD with 200ms color transition chip
       const diffHud = document.createElement('div');
@@ -1402,7 +1404,11 @@ export class TelemetryCharts {
     this.resizeObserver.observe(this.container);
 
     // Setup Interactive Zoom, Pan, and Click-Seek Handlers
-    this.setupInteractivity(ch1Row.wrap, ch2Row.wrap, ch3Row.wrap, ch4Row.wrap, ch5Row.wrap);
+    const interactiveRows = [ch1Row.wrap, ch2Row.wrap, ch3Row.wrap, ch4Row.wrap, ch5Row.wrap];
+    if (diffRowWrap) {
+      interactiveRows.push(diffRowWrap);
+    }
+    this.setupInteractivity(...interactiveRows);
   }
 
   private renderToolbar(): void {
