@@ -193,22 +193,10 @@ async function performEvaluation(): Promise<void> {
   if (!currentReplay || !currentBeatmap) return;
   const runToken = ++evalRunCounter;
 
-  // Pre-seed liveStats to generate prefix stats needed for gradual PP stepper
-  liveStats.setSession(
-    currentBeatmap,
-    currentReplay,
-    null,
-    null,
-    [],
-    null,
-    null
-  );
-
   const pipeline = await runEvaluationPipeline(
     currentReplay,
     currentBeatmap,
     currentBeatmapStarRating,
-    liveStats.getPrefixStats(),
     () => runToken !== evalRunCounter
   );
 
@@ -232,7 +220,8 @@ async function performEvaluation(): Promise<void> {
     maxPossiblePP,
     precomputedLivePP,
     currentLazerDiff,
-    currentDiffAttributes
+    currentDiffAttributes,
+    pipeline.prefixStats
   );
 
   liveStats.updateTopBar(currentReplayRate, timeBus.getCurrentTime());

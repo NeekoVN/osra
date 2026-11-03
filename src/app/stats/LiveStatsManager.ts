@@ -63,7 +63,8 @@ export class LiveStatsManager {
     maxPossiblePP: PerformanceBreakdown | null,
     precomputedLivePP: LazerPerformanceBreakdown[],
     lazerDiff: LazerDifficultyAttributes | null,
-    diffAttributes: DifficultyAttributes | null
+    diffAttributes: DifficultyAttributes | null,
+    prefixStats?: PrefixHitStat[]
   ): void {
     this.currentBeatmap = beatmap;
     this.currentReplay = replay;
@@ -76,7 +77,9 @@ export class LiveStatsManager {
     this.lastLiveTime = 0;
     this.lastLiveIdx = -1;
 
-    if (evalResult && beatmap && replay) {
+    if (prefixStats) {
+      this.prefixStats = prefixStats;
+    } else if (evalResult && beatmap && replay) {
       this.buildPrefixStats(evalResult.hitEvents);
     } else {
       this.prefixStats = [];

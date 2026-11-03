@@ -9,6 +9,8 @@ import {
   LazerPerformanceBreakdown
 } from '../../core/math/LazerDifficulty.ts';
 import { calculateEffectiveDifficulty, getGameplayRateFromMods } from '../../core/math/HitWindows.ts';
+import { buildPrefixCombo } from '../../core/math/ComboTracker.ts';
+import { calculateLazerAccuracy } from '../../core/math/RollingAccuracy.ts';
 import { PrefixHitStat } from '../stats/LiveStatsManager.ts';
 
 export interface EvaluationPipelineResult {
@@ -21,13 +23,13 @@ export interface EvaluationPipelineResult {
   diffAttributes: DifficultyAttributes;
   maxPossiblePP: PerformanceBreakdown;
   precomputedLivePP: LazerPerformanceBreakdown[];
+  prefixStats: PrefixHitStat[];
 }
 
 export async function runEvaluationPipeline(
   replay: OsrReplay,
   beatmap: Beatmap,
   beatmapStarRating: number | undefined,
-  prefixStats: PrefixHitStat[],
   isCancelled: () => boolean
 ): Promise<EvaluationPipelineResult | null> {
   const evalResult = evaluateReplaySession(replay, beatmap);
@@ -38,6 +40,30 @@ export async function runEvaluationPipeline(
   const lastObjTime = beatmap.hitObjects[beatmap.hitObjects.length - 1]?.time || 0;
   const totalDuration = Math.max(lastFrameTime, lastObjTime) + 1500;
   const firstTime = beatmap.hitObjects[0]?.time || 0;
+
+  // Precompute prefix stats for gradual PP calculation and live top bar
+  const comboStats = buildPrefixCombo(evalResult.hitEvents, beatmap, {
+    ticksHit: replay.sliderTicks?.hit,
+    ticksMax: replay.sliderTicks?.max,
+    endsHit: replay.sliderEnds?.hit,
+    endsMax: replay.sliderEnds?.max
+  });
+  const prefixStats: PrefixHitStat[] = comboStats.map((s) => ({
+    time: s.time,
+    c300: s.c300,
+    c100: s.c100,
+    c50: s.c50,
+    cMiss: s.cMiss,
+    combo: s.combo,
+    maxComboSoFar: s.maxComboSoFar,
+    acc: calculateLazerAccuracy(s.c300, s.c100, s.c50, s.cMiss, s.ticksHit, s.maxTicks, s.endsHit, s.maxEnds),
+    ticksHit: s.ticksHit,
+    maxTicks: s.maxTicks,
+    endsHit: s.endsHit,
+    maxEnds: s.maxEnds,
+    ppStep: s.ppStep,
+    headIdx: s.headIdx
+  }));
 
   let lazerDiff: LazerDifficultyAttributes | null = null;
   let diffAttributes: DifficultyAttributes;
@@ -184,6 +210,7 @@ export async function runEvaluationPipeline(
     lazerDiff,
     diffAttributes,
     maxPossiblePP,
-    precomputedLivePP
+    precomputedLivePP,
+    prefixStats
   };
 }
