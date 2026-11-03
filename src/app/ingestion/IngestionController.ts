@@ -7,11 +7,12 @@ import { Beatmap } from '../../core/types/beatmap.ts';
 import { PerformancePoints } from '../../core/math/PerformancePoints.ts';
 import { calculateLazerDifficulty } from '../../core/math/LazerDifficulty.ts';
 import { renderModBadges } from '../../ui/components/ModBadges.ts';
+import { md5 } from '../../core/binary/md5.ts';
 import sampleClickUrl from '../../assets/sounds/osu-logo-select.wav';
 
 export interface IngestionCallbacks {
   onReplayParsed: (replay: OsrReplay) => Promise<void> | void;
-  onBeatmapParsed: (beatmap: Beatmap, starRating?: number, bgUrl?: string | null) => void;
+  onBeatmapParsed: (beatmap: Beatmap, starRating?: number, bgUrl?: string | null, hash?: string) => void;
   onPackageParsed: (pkg: OszPackage, bgUrl: string | null) => void;
   onTriggerEvaluation: () => void;
   onSetBackground: (bgUrl: string | null) => void;
@@ -25,6 +26,12 @@ export interface IngestionCallbacks {
 export class IngestionController {
   private callbacks: IngestionCallbacks;
   private sampleClick: HTMLAudioElement;
+
+  private currentBeatmapHash: string | null = null;
+  private currentFetchGeneration = 0;
+  private progressTimer: ReturnType<typeof setInterval> | null = null;
+  private delayedEvalTimer: ReturnType<typeof setTimeout> | null = null;
+  private isFetching = false;
 
   private ingestionStage = document.getElementById('ingestion-stage') as HTMLElement;
   private logoHoverContainer = document.getElementById('logo-hover-container') as HTMLElement;
@@ -84,6 +91,7 @@ export class IngestionController {
 
     if (this.replayInput) {
       this.replayInput.addEventListener('change', async (e: Event) => {
+        if (this.isFetching) return;
         const file = (e.target as HTMLInputElement).files?.[0];
         if (file) this.handleReplayFile(file);
       });
@@ -91,6 +99,7 @@ export class IngestionController {
 
     if (this.beatmapInput) {
       this.beatmapInput.addEventListener('change', async (e: Event) => {
+        if (this.isFetching) return;
         const file = (e.target as HTMLInputElement).files?.[0];
         if (file) this.handleBeatmapOrPackageFile(file);
       });
@@ -98,8 +107,16 @@ export class IngestionController {
 
     if (this.dockSubmitBtn) {
       this.dockSubmitBtn.addEventListener('click', () => {
-        if (this.callbacks.getCurrentReplay() && this.callbacks.getCurrentBeatmap()) {
-          this.callbacks.onTriggerEvaluation();
+        if (this.isFetching) return;
+        const replay = this.callbacks.getCurrentReplay();
+        const beatmap = this.callbacks.getCurrentBeatmap();
+        if (replay && beatmap) {
+          const replayHash = replay.beatmapHash ? replay.beatmapHash.toLowerCase().trim() : null;
+          if (replayHash && this.currentBeatmapHash && this.currentBeatmapHash !== replayHash) {
+            void this.autoFetchBeatmapFromMirror(replayHash);
+          } else {
+            this.callbacks.onTriggerEvaluation();
+          }
         }
       });
     }
@@ -110,6 +127,7 @@ export class IngestionController {
 
     window.addEventListener('drop', (e: DragEvent) => {
       e.preventDefault();
+      if (this.isFetching) return;
       const file = e.dataTransfer?.files[0];
       if (!file) return;
       const lower = file.name.toLowerCase();
@@ -155,7 +173,36 @@ export class IngestionController {
     }
   }
 
+  private cancelPendingFetch(): void {
+    this.currentFetchGeneration++;
+    if (this.progressTimer !== null) {
+      clearInterval(this.progressTimer);
+      this.progressTimer = null;
+    }
+    if (this.delayedEvalTimer !== null) {
+      clearTimeout(this.delayedEvalTimer);
+      this.delayedEvalTimer = null;
+    }
+    if (this.isFetching) {
+      this.isFetching = false;
+      this.setFetchingUi(false);
+    }
+  }
+
+  private setFetchingUi(fetching: boolean): void {
+    if (this.ingestionStage) {
+      this.ingestionStage.classList.toggle('fetching', fetching);
+    }
+    const importBtn = document.getElementById('btn-import') as HTMLButtonElement | null;
+    if (importBtn) {
+      importBtn.disabled = fetching;
+    }
+    if (this.replayInput) this.replayInput.disabled = fetching;
+    if (this.beatmapInput) this.beatmapInput.disabled = fetching;
+  }
+
   public async handleReplayFile(file: File): Promise<void> {
+    this.cancelPendingFetch();
     try {
       const buffer = await file.arrayBuffer();
       const replay = await parseOsrReplay(buffer);
@@ -165,13 +212,18 @@ export class IngestionController {
 
       const beatmap = this.callbacks.getCurrentBeatmap();
       const pkg = this.callbacks.getCurrentPackage();
+      const replayHash = replay.beatmapHash ? replay.beatmapHash.toLowerCase().trim() : null;
 
-      if (!beatmap && replay.beatmapHash) {
-        await this.autoFetchBeatmapFromMirror(replay.beatmapHash);
+      if (!beatmap && replayHash) {
+        await this.autoFetchBeatmapFromMirror(replayHash);
       } else if (pkg) {
         this.matchPackageWithReplay();
       } else if (beatmap) {
-        this.callbacks.onTriggerEvaluation();
+        if (replayHash && this.currentBeatmapHash && this.currentBeatmapHash !== replayHash) {
+          await this.autoFetchBeatmapFromMirror(replayHash);
+        } else {
+          this.callbacks.onTriggerEvaluation();
+        }
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -181,6 +233,7 @@ export class IngestionController {
   }
 
   public async handleBeatmapOrPackageFile(file: File): Promise<void> {
+    this.cancelPendingFetch();
     const lower = file.name.toLowerCase();
     try {
       if (lower.endsWith('.osz') || lower.endsWith('.zip')) {
@@ -202,9 +255,17 @@ export class IngestionController {
       } else {
         const text = await file.text();
         const beatmap = parseOsuBeatmap(text);
-        this.callbacks.onBeatmapParsed(beatmap);
-        if (this.callbacks.getCurrentReplay()) {
-          this.callbacks.onTriggerEvaluation();
+        const hash = md5(text).toLowerCase().trim();
+        this.currentBeatmapHash = hash;
+        this.callbacks.onBeatmapParsed(beatmap, undefined, undefined, hash);
+        const replay = this.callbacks.getCurrentReplay();
+        if (replay) {
+          const replayHash = replay.beatmapHash ? replay.beatmapHash.toLowerCase().trim() : null;
+          if (replayHash && replayHash !== hash) {
+            this.revealDock();
+          } else {
+            this.callbacks.onTriggerEvaluation();
+          }
         } else {
           this.revealDock();
         }
@@ -222,17 +283,19 @@ export class IngestionController {
 
     let selectedDiff: OszDifficultyEntry | null = null;
     if (replay?.beatmapHash) {
-      const norm = replay.beatmapHash.toLowerCase();
-      selectedDiff = pkg.difficulties.find(d => d.checksum.toLowerCase() === norm) || null;
+      const norm = replay.beatmapHash.toLowerCase().trim();
+      selectedDiff = pkg.difficulties.find(d => d.checksum.toLowerCase().trim() === norm) || null;
     }
 
     if (selectedDiff) {
-      this.callbacks.onBeatmapParsed(selectedDiff.beatmap);
+      this.currentBeatmapHash = selectedDiff.checksum.toLowerCase().trim();
+      this.callbacks.onBeatmapParsed(selectedDiff.beatmap, undefined, undefined, this.currentBeatmapHash);
       this.callbacks.onTriggerEvaluation();
     } else {
       this.revealDock();
       this.renderDifficultySelector(pkg.difficulties);
-      this.callbacks.onBeatmapParsed(pkg.difficulties[0].beatmap);
+      this.currentBeatmapHash = pkg.difficulties[0].checksum.toLowerCase().trim();
+      this.callbacks.onBeatmapParsed(pkg.difficulties[0].beatmap, undefined, undefined, this.currentBeatmapHash);
     }
   }
 
@@ -250,20 +313,26 @@ export class IngestionController {
       const row = document.createElement('div');
       row.className = `diff-row ${d.beatmap === currentBeatmap ? 'active' : ''}`;
       const estSR = PerformancePoints.estimateDifficultyAttributes(d.beatmap).starRating;
-      row.innerHTML = `
-        <span>${d.diffName}</span>
-        <span class="diff-sr">★ ${estSR.toFixed(2)}</span>
-      `;
+
+      const nameSpan = document.createElement('span');
+      nameSpan.textContent = d.diffName;
+
+      const srSpan = document.createElement('span');
+      srSpan.className = 'diff-sr';
+      srSpan.textContent = `★ ${estSR.toFixed(2)}`;
+
+      row.appendChild(nameSpan);
+      row.appendChild(srSpan);
 
       calculateLazerDifficulty(d.beatmap, currentReplay?.mods || 0, currentReplay ? currentReplayRate : undefined)
         .then((attrs) => {
-          const srEl = row.querySelector('.diff-sr');
-          if (srEl) srEl.textContent = `★ ${attrs.starRating.toFixed(2)}`;
+          srSpan.textContent = `★ ${attrs.starRating.toFixed(2)}`;
         })
         .catch(() => {});
 
       row.onclick = () => {
-        this.callbacks.onBeatmapParsed(d.beatmap);
+        this.currentBeatmapHash = d.checksum.toLowerCase().trim();
+        this.callbacks.onBeatmapParsed(d.beatmap, undefined, undefined, this.currentBeatmapHash);
         document.querySelectorAll('.diff-row').forEach((b) => b.classList.remove('active'));
         row.classList.add('active');
       };
@@ -272,13 +341,15 @@ export class IngestionController {
   }
 
   public async autoFetchBeatmapFromMirror(hash: string): Promise<void> {
-    if (this.ingestionStage) {
-      this.ingestionStage.classList.add('fetching');
-    }
+    this.cancelPendingFetch();
+    const generation = ++this.currentFetchGeneration;
+    this.isFetching = true;
+    this.setFetchingUi(true);
     this.setProgress(0.2);
 
     let progress = 0.2;
-    const progressTimer = setInterval(() => {
+    this.progressTimer = setInterval(() => {
+      if (this.currentFetchGeneration !== generation) return;
       if (progress < 0.85) {
         progress += 0.05;
         this.setProgress(progress);
@@ -287,11 +358,19 @@ export class IngestionController {
 
     try {
       const result = await MirrorClient.fetchByMd5(hash, (_msg) => {
+        if (this.currentFetchGeneration !== generation) return;
         progress = Math.max(progress, 0.65);
         this.setProgress(progress);
       });
 
-      clearInterval(progressTimer);
+      if (this.currentFetchGeneration !== generation) {
+        return;
+      }
+
+      if (this.progressTimer !== null) {
+        clearInterval(this.progressTimer);
+        this.progressTimer = null;
+      }
       this.setProgress(1.0);
 
       const beatmap = result.beatmap.beatmap;
@@ -303,29 +382,34 @@ export class IngestionController {
       }
 
       const bgUrl = result.backgroundBlobUrl || null;
+      this.currentBeatmapHash = (result.beatmap.checksum || hash).toLowerCase().trim();
       this.callbacks.onSetBackground(bgUrl);
-      this.callbacks.onBeatmapParsed(beatmap, sr, bgUrl);
+      this.callbacks.onBeatmapParsed(beatmap, sr, bgUrl, this.currentBeatmapHash);
 
-      setTimeout(() => {
-        if (this.ingestionStage) {
-          this.ingestionStage.classList.remove('fetching');
-        }
+      this.delayedEvalTimer = setTimeout(() => {
+        if (this.currentFetchGeneration !== generation) return;
+        this.delayedEvalTimer = null;
+        this.isFetching = false;
+        this.setFetchingUi(false);
         this.callbacks.onTriggerEvaluation();
       }, 250);
     } catch {
-      clearInterval(progressTimer);
-      if (this.ingestionStage) {
-        this.ingestionStage.classList.remove('fetching');
+      if (this.currentFetchGeneration !== generation) return;
+      if (this.progressTimer !== null) {
+        clearInterval(this.progressTimer);
+        this.progressTimer = null;
       }
+      this.isFetching = false;
+      this.setFetchingUi(false);
       this.setProgress(0);
       this.revealDock();
     }
   }
 
   public reset(): void {
-    if (this.ingestionStage) {
-      this.ingestionStage.classList.remove('dock-active', 'fetching');
-    }
+    this.cancelPendingFetch();
+    this.currentBeatmapHash = null;
+    this.setFetchingUi(false);
     this.setProgress(0);
     if (this.dockReplayBar) this.dockReplayBar.style.display = 'none';
     if (this.diffLadder) this.diffLadder.style.display = 'none';
