@@ -42,6 +42,7 @@ export function slicePath(
   const start = Math.max(0, Math.min(1, startFrac));
   const end = Math.max(start, Math.min(1, endFrac));
   if (start === 0 && end === 1) return points;
+  if (end - start < 0.0001) return [];
 
   let totalDist = 0;
   const dists: number[] = [0];
@@ -49,7 +50,7 @@ export function slicePath(
     totalDist += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
     dists.push(totalDist);
   }
-  if (totalDist === 0) return points;
+  if (totalDist === 0) return [];
 
   const startDist = start * totalDist;
   const endDist = end * totalDist;

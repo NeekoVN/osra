@@ -18,6 +18,15 @@ function isValidZip(buf: ArrayBuffer): boolean {
   return header[0] === 0x50 && header[1] === 0x4b; // 'PK'
 }
 
+function createTimeoutSignal(ms: number): AbortSignal {
+  if (typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal) {
+    return AbortSignal.timeout(ms);
+  }
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(new Error(`Request timed out after ${ms}ms`)), ms);
+  return controller.signal;
+}
+
 export class MirrorClient {
   /**
    * Automatically looks up and downloads a beatmap by MD5 hash from public mirrors
@@ -44,7 +53,7 @@ export class MirrorClient {
 
     for (const ep of metadataEndpoints) {
       try {
-        const metaResp = await fetch(ep);
+        const metaResp = await fetch(ep, { signal: createTimeoutSignal(10000) });
         if (metaResp.ok) {
           const data = await metaResp.json();
           if (data && (data.beatmapset_id || data.id || data.ParentSetID)) {
@@ -62,7 +71,7 @@ export class MirrorClient {
     }
 
     if (!beatmapsetId) {
-      throw new Error(`Beatmap with hash ${normHash} could not be located on mirrors (osu.direct / hinamizawa / catboy).`);
+      throw new Error(`Beatmap with hash ${normHash} could not be located on mirrors (osu.direct / hinamizawa / catboy). Please upload your beatmap file (.osz or .osu).`);
     }
 
     onProgress?.(`Found beatmapset #${beatmapsetId}. Downloading .osz archive...`);
@@ -85,7 +94,7 @@ export class MirrorClient {
     for (const cand of downloadCandidates) {
       try {
         onProgress?.(`Fetching .osz from ${cand.name}...`);
-        const resp = await fetch(cand.url);
+        const resp = await fetch(cand.url, { signal: createTimeoutSignal(30000) });
         if (!resp.ok) continue;
 
         // Check if response is JSON (e.g. hinamizawa returning { download_url: '...' })
@@ -94,7 +103,7 @@ export class MirrorClient {
           try {
             const data = await resp.json();
             if (data && data.download_url) {
-              const directResp = await fetch(data.download_url);
+              const directResp = await fetch(data.download_url, { signal: createTimeoutSignal(30000) });
               if (directResp.ok) {
                 const buf = await directResp.arrayBuffer();
                 if (isValidZip(buf)) {
@@ -116,12 +125,16 @@ export class MirrorClient {
         }
       } catch (err: unknown) {
         lastError = err instanceof Error ? err : new Error(String(err));
+        const isTimeout = lastError.name === 'TimeoutError' || lastError.name === 'AbortError' || lastError.message.includes('timed out');
+        if (isTimeout) {
+          onProgress?.(`${cand.name} timed out after 30s. Trying fallback mirror...`);
+        }
       }
     }
 
     if (!oszBuffer) {
       throw new Error(
-        `Failed to download .osz package for beatmapset #${beatmapsetId} from mirrors. ${lastError ? lastError.message : ''}`
+        `Failed to download .osz package for beatmapset #${beatmapsetId} from mirrors. Please upload your beatmap file (.osz or .osu).`
       );
     }
 

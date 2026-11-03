@@ -6,7 +6,8 @@ import { HitObject, TimingPoint } from '../../types/beatmap.ts';
 export function computeSliderVelocitiesAndDurations(
   hitObjects: HitObject[],
   timingPoints: TimingPoint[],
-  sliderMultiplier: number
+  sliderMultiplier: number,
+  sliderTickRate: number = 1
 ): void {
   for (const obj of hitObjects) {
     if (obj.objectType !== 'slider') continue;
@@ -46,8 +47,38 @@ export function computeSliderVelocitiesAndDurations(
     const velocity = scoringDistance / (uninheritedTp.beatLength * bpmMultiplier);
     const spanCount = Math.max(1, obj.repeatCount);
     const duration = velocity > 0 ? (spanCount * obj.pixelLength) / velocity : 0;
+    const spanDuration = duration / spanCount;
 
     obj.duration = duration;
     obj.endTime = obj.time + duration;
+
+    // osu!lazer SliderEventGenerator tick calculation
+    const tickRate = Math.max(0.01, sliderTickRate || 1);
+    const tickDistance = (scoringDistance / bpmMultiplier) / tickRate;
+    const minDistanceFromEnd = velocity * 10;
+    const length = obj.pixelLength;
+
+    obj.ticks = [];
+
+    if (tickDistance > 0 && length > 0) {
+      for (let span = 0; span < spanCount; span++) {
+        const spanStartTime = obj.time + span * spanDuration;
+        const reversed = span % 2 === 1;
+
+        for (let d = tickDistance; d <= length; d += tickDistance) {
+          if (d >= length - minDistanceFromEnd) break;
+
+          const pathProgress = d / length;
+          const timeProgress = reversed ? 1 - pathProgress : pathProgress;
+
+          obj.ticks.push({
+            time: spanStartTime + timeProgress * spanDuration,
+            spanIndex: span,
+            pathProgress
+          });
+        }
+      }
+      obj.ticks.sort((a, b) => a.time - b.time);
+    }
   }
 }

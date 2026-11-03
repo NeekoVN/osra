@@ -49,6 +49,7 @@ export class IngestionController {
   private diffButtons = document.getElementById('diff-buttons') as HTMLElement;
   private dockSubmitBtn = document.getElementById('dock-submit-btn') as HTMLButtonElement;
   private audioPlayer = document.getElementById('audio-player') as HTMLAudioElement;
+  private dockDropSpan = document.querySelector('#dock-drop span') as HTMLElement | null;
 
   constructor(callbacks: IngestionCallbacks) {
     this.callbacks = callbacks;
@@ -402,6 +403,9 @@ export class IngestionController {
       this.isFetching = false;
       this.setFetchingUi(false);
       this.setProgress(0);
+      if (this.dockDropSpan) {
+        this.dockDropSpan.textContent = 'Upload .osz / .osu beatmap';
+      }
       this.revealDock();
     }
   }
@@ -411,6 +415,7 @@ export class IngestionController {
     this.currentBeatmapHash = null;
     this.setFetchingUi(false);
     this.setProgress(0);
+    if (this.dockDropSpan) this.dockDropSpan.textContent = '.osz / .osu';
     if (this.dockReplayBar) this.dockReplayBar.style.display = 'none';
     if (this.diffLadder) this.diffLadder.style.display = 'none';
     if (this.dockSubmitBtn) this.dockSubmitBtn.style.display = 'none';

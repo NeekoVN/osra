@@ -63,6 +63,12 @@ export interface SliderPathPoint {
   y: number;
 }
 
+export interface SliderTick {
+  time: number;
+  spanIndex: number;
+  pathProgress: number;
+}
+
 export interface SliderObject extends HitObjectBase {
   objectType: 'slider';
   curveType: string;
@@ -71,7 +77,7 @@ export interface SliderObject extends HitObjectBase {
   pixelLength: number;
   duration: number;
   endTime: number;
-  ticks: number[];
+  ticks: SliderTick[];
   sliderEnd: SliderPathPoint;
 }
 

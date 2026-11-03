@@ -272,6 +272,7 @@ export class PlayfieldRenderer {
       return;
     }
 
+    this.renderFollowPoints(ctx, currentTimeMs);
     this.renderHitObjects(ctx, currentTimeMs);
 
     if (this.showTrail) {
@@ -326,7 +327,9 @@ export class PlayfieldRenderer {
         const sliderEnd = obj.endTime || (sliderStart + sliderDuration);
         const totalSpans = Math.max(1, obj.repeatCount || 1);
 
-        if (currentTimeMs < sliderStart - this.preemptMs || currentTimeMs > sliderEnd + 260) {
+        const fadeOutDuration = isMiss ? (240 * this.playbackRate) : (40 * this.playbackRate);
+
+        if (currentTimeMs < sliderStart - this.preemptMs || currentTimeMs > sliderEnd + Math.max(260, fadeOutDuration + 20)) {
           continue;
         }
 
@@ -354,25 +357,52 @@ export class PlayfieldRenderer {
           } else if (currentTimeMs <= sliderEnd) {
             bodyAlpha = 1.0;
           } else {
-            bodyAlpha = Math.max(0.0, 1.0 - (currentTimeMs - sliderEnd) / 100);
+            // In lazer, if missed, the whole slider fades out over 240ms; if hit, short 40ms cleanup fade
+            bodyAlpha = Math.max(0.0, 1.0 - (currentTimeMs - sliderEnd) / Math.max(1, fadeOutDuration));
           }
         }
 
         let startFrac = 0.0;
         let endFrac = 1.0;
-        let isBodyVisible = currentTimeMs <= sliderEnd;
+        let isBodyVisible = false;
 
         if (currentTimeMs < sliderStart) {
+          isBodyVisible = true;
           endFrac = Math.max(0.02, Math.min(1.0, (currentTimeMs - (sliderStart - this.preemptMs)) / (this.preemptMs / 3)));
-        } else if (currentTimeMs >= sliderStart && currentTimeMs < sliderEnd) {
-          if (totalSpans === 1) {
-            const progress = (currentTimeMs - sliderStart) / sliderDuration;
-            startFrac = progress;
-            endFrac = 1.0;
+        } else if (currentTimeMs < sliderEnd) {
+          isBodyVisible = true;
+          if (!isMiss) {
+            // As per lazer spec: snaking out ONLY plays if head circle was hit
+            const progress = Math.max(0, Math.min(1, (currentTimeMs - sliderStart) / sliderDuration));
+            const currentSpan = Math.min(totalSpans - 1, Math.floor(progress * totalSpans));
+            const spanProgress = (progress * totalSpans) - currentSpan;
+
+            if (currentSpan >= totalSpans - 1) {
+              // osu!lazer SnakingSliderBody: on the final span, snake out behind the ball
+              if ((totalSpans - 1) % 2 === 1) {
+                // Odd last span (reverse: tail -> head)
+                startFrac = 0.0;
+                endFrac = Math.max(0, 1.0 - spanProgress);
+              } else {
+                // Even last span (forward: head -> tail)
+                startFrac = Math.min(1.0, spanProgress);
+                endFrac = 1.0;
+              }
+            } else {
+              // Intermediate spans keep the full body visible
+              startFrac = 0.0;
+              endFrac = 1.0;
+            }
           } else {
+            // Missed slider head: snaking out does NOT play, entire slider body remains visible
             startFrac = 0.0;
             endFrac = 1.0;
           }
+        } else if (isMiss && currentTimeMs <= sliderEnd + fadeOutDuration) {
+          // Missed slider head: snaking out never occurred, so full body fades out post-sliderEnd
+          isBodyVisible = true;
+          startFrac = 0.0;
+          endFrac = 1.0;
         }
 
         if (isBodyVisible && bodyAlpha > 0.005) {
@@ -397,6 +427,53 @@ export class PlayfieldRenderer {
             ctx.globalAlpha = bodyAlpha * 0.85;
             ctx.stroke();
             ctx.restore();
+          }
+        }
+
+        // 2b. SLIDER TICKS
+        if (isBodyVisible && obj.ticks && obj.ticks.length > 0 && bodyAlpha > 0.005) {
+          const tickRadius = Math.max(3.5, R * 0.14);
+
+          for (const tick of obj.ticks) {
+            // During approach snake-in, only show if path has snaked to this point
+            if (currentTimeMs < sliderStart && tick.pathProgress > endFrac) {
+              continue;
+            }
+
+            // During gameplay snake-out, hide if the body has snaked past this point
+            if (currentTimeMs >= sliderStart && (tick.pathProgress < startFrac || tick.pathProgress > endFrac)) {
+              continue;
+            }
+
+            const timeDiff = tick.time - currentTimeMs;
+            const tickElapsed = -timeDiff / this.playbackRate;
+
+            // Skip if hit animation already finished (> 150ms)
+            if (tickElapsed > 150) continue;
+
+            const pt = getPointAtProgress(rawPoints, tick.pathProgress);
+            const tx = pt.x + stackOffsetX;
+            const ty = pt.y + stackOffsetY;
+
+            let tickAlpha = bodyAlpha * 0.45;
+            let curRadius = tickRadius;
+
+            if (timeDiff <= 0) {
+              // 150ms fade-out and slight pop
+              const p = Math.min(1.0, tickElapsed / 150);
+              tickAlpha = (bodyAlpha * 0.45) * (1.0 - p);
+              curRadius = tickRadius * (1.0 + 0.3 * (1.0 - Math.pow(1.0 - p, 3)));
+            }
+
+            if (tickAlpha > 0.005) {
+              ctx.save();
+              ctx.globalAlpha = tickAlpha;
+              ctx.fillStyle = comboColor; // Same color and opacity as slider border
+              ctx.beginPath();
+              ctx.arc(tx, ty, curRadius, 0, Math.PI * 2);
+              ctx.fill();
+              ctx.restore();
+            }
           }
         }
 
@@ -610,6 +687,120 @@ export class PlayfieldRenderer {
           this.preemptMs,
           this.playbackRate
         );
+        ctx.restore();
+      }
+    }
+  }
+
+  private renderFollowPoints(ctx: CanvasRenderingContext2D, currentTimeMs: number): void {
+    if (!this.beatmap) return;
+    const objects = this.beatmap.hitObjects;
+    const SPACING = 32;
+
+    for (let i = 0; i < objects.length - 1; i++) {
+      const objA = objects[i];
+      const objB = objects[i + 1];
+
+      // In osu!lazer, follow points only connect objects within the same combo chain,
+      // and neither object may be a spinner.
+      if (objB.isNewCombo) continue;
+      if (objA.objectType === 'spinner' || objB.objectType === 'spinner') continue;
+
+      const startTime = objA.objectType === 'slider'
+        ? (objA.endTime || (objA.time + (objA.duration || 0)))
+        : objA.time;
+      const endTime = objB.time;
+      const duration = endTime - startTime;
+      if (duration <= 0) continue;
+
+      const preempt = 800 * Math.min(1.0, this.preemptMs / 450);
+
+      // Window check: earliest point fades in at (startTime - preempt),
+      // latest point completes fade-out at (endTime + 400)
+      if (currentTimeMs < startTime - preempt || currentTimeMs > endTime + 400) {
+        continue;
+      }
+
+      let startX: number;
+      let startY: number;
+
+      if (objA.objectType === 'slider') {
+        const repeats = Math.max(1, objA.repeatCount || 1);
+        const stackOffsetX = objA.stackedX - objA.x;
+        const stackOffsetY = objA.stackedY - objA.y;
+        if (repeats % 2 === 1) {
+          startX = (objA.sliderEnd ? objA.sliderEnd.x : objA.x) + stackOffsetX;
+          startY = (objA.sliderEnd ? objA.sliderEnd.y : objA.y) + stackOffsetY;
+        } else {
+          startX = objA.stackedX;
+          startY = objA.stackedY;
+        }
+      } else {
+        startX = objA.stackedX;
+        startY = objA.stackedY;
+      }
+
+      const endX = objB.stackedX;
+      const endY = objB.stackedY;
+
+      const dx = endX - startX;
+      const dy = endY - startY;
+      const distance = Math.hypot(dx, dy);
+
+      if (distance < SPACING * 2.5) continue;
+
+      const dirX = dx / distance;
+      const dirY = dy / distance;
+
+      for (let d = SPACING * 1.5; d < distance - SPACING; d += SPACING) {
+        const fraction = d / distance;
+        const fadeOutTime = startTime + fraction * duration;
+        const fadeInTime = fadeOutTime - preempt;
+
+        if (currentTimeMs < fadeInTime || currentTimeMs > fadeOutTime + 400) {
+          continue;
+        }
+
+        const fadeInElapsed = (currentTimeMs - fadeInTime) / this.playbackRate;
+        const fadeInProgress = Math.min(1.0, Math.max(0.0, fadeInElapsed / 400));
+        // Lazer Easing.Out for smooth movement
+        const easeOut = 1.0 - Math.pow(1.0 - fadeInProgress, 2);
+
+        // Lazer: pointStartPosition = startPosition + (fraction - 0.1) * distanceVector
+        // moving to: pointEndPosition = startPosition + fraction * distanceVector
+        const currentFraction = fraction - 0.1 * (1.0 - easeOut);
+        const px = startX + currentFraction * dx;
+        const py = startY + currentFraction * dy;
+
+        let alpha = 0.0;
+        if (currentTimeMs < fadeOutTime) {
+          alpha = fadeInProgress;
+        } else {
+          const fadeOutElapsed = (currentTimeMs - fadeOutTime) / this.playbackRate;
+          alpha = Math.max(0.0, 1.0 - fadeOutElapsed / 400);
+        }
+
+        // Keep it subtle as requested:
+        // "the shape should resemble a thin line and be subtle, I don't want a solid very visible line even if it's thin, not '>>>' like in default skins."
+        const finalAlpha = alpha * 0.35;
+        if (finalAlpha <= 0.01) continue;
+
+        const dashLen = 7;
+        const halfLen = dashLen / 2;
+        const x1 = px - dirX * halfLen;
+        const y1 = py - dirY * halfLen;
+        const x2 = px + dirX * halfLen;
+        const y2 = py + dirY * halfLen;
+
+        ctx.save();
+        ctx.globalAlpha = finalAlpha;
+        ctx.strokeStyle = '#FFFFFF';
+        ctx.lineWidth = 1.5;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
         ctx.restore();
       }
     }

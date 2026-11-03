@@ -178,8 +178,8 @@ export function parseOsuBeatmap(content: string): Beatmap {
   // Apply Stacking logic and compute stack offsets
   computeStacking(rawHitObjects, difficulty.circleSize, difficulty.approachRate, stackLeniency);
 
-  // Compute slider velocities and durations
-  computeSliderVelocitiesAndDurations(rawHitObjects, timingPoints, difficulty.sliderMultiplier);
+  // Compute slider velocities, durations, and ticks
+  computeSliderVelocitiesAndDurations(rawHitObjects, timingPoints, difficulty.sliderMultiplier, difficulty.sliderTickRate);
 
   return {
     formatVersion,

@@ -22,7 +22,7 @@ export function getModdedBeatmap(beatmap: Beatmap, mods: number = OsuMods.None):
         stackedY: flippedStackedY,
         curvePoints: obj.curvePoints ? obj.curvePoints.map(p => ({ x: p.x, y: 384 - p.y })) : [],
         sliderEnd: obj.sliderEnd ? { x: obj.sliderEnd.x, y: 384 - obj.sliderEnd.y } : { x: obj.x, y: flippedY },
-        ticks: obj.ticks ? [...obj.ticks] : []
+        ticks: obj.ticks ? obj.ticks.map(t => ({ ...t })) : []
       };
     }
     return {
